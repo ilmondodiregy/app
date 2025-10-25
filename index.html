@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Gestione Attività</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="application-name" content="Gestione Attività">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Gestione">
+    <meta name="theme-color" content="#f1f5f9">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    
+    <style>
+        body {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            overscroll-behavior-y: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        input, textarea, select {
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+        .compact-input {
+            padding: 0.35rem 0.6rem !important;
+            font-size: 0.875rem !important;
+            min-height: 36px !important;
+        }
+        .compact-select {
+            padding: 0.35rem 0.6rem !important;
+            font-size: 0.875rem !important;
+            min-height: 36px !important;
+        }
+        .compact-card {
+            padding: 0.875rem !important;
+        }
+        @media (max-width: 768px) {
+            .compact-input, .compact-select {
+                min-height: 40px !important;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, StrictMode } = React;
+
+        // =================================================================
+        // TYPES
+        // =================================================================
+        const OrderStatus = {
+            DaIniziare: 'Da Iniziare',
+            InSvolgimento: 'In Svolgimento',
+            Terminato: 'Terminato',
+        };
+
+        // =================================================================
+        // HOOKS - LOCALSTORAGE ONLY
+        // =================================================================
+        function useLocalStorage(key, initialValue) {
+            const [storedValue, setStoredValue] = useState(() => {
+                if (typeof window === 'undefined') {
+                    return initialValue;
+                }
+                try {
+                    const item = window.localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch (error) {
+                    console.error(error);
+                    return initialValue;
+                }
+            });
+
+            const setValue = (value) => {
+                try {
+                    const valueToStore = value instanceof Function ? value(storedValue) : value;
+                    setStoredValue(valueToStore);
+                    if (typeof window !== 'undefined') {
+                        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+                    }
+                } catch (error) {
+                    console.error(error);
+                }
+            };
+
+            return [storedValue, setValue];
+        }
+
+        // =================================================================
+        // BACKUP MANAGER
+        // =================================================================
+        const BackupManager = {
+            exportAllData() {
+                const data = {
+                    orders: JSON.parse(localStorage.getItem('orders') || '[]'),
+                    expenses: JSON.parse(localStorage.getItem('expenses') || '[]'),
+                    stocks: JSON.parse(localStorage.getItem('stocks') || '[]'),
+                    exportDate: new Date().toISOString(),
+                    version: '1.0'
+                };
+                
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `backup_completo_${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            },
+
+            async importAllData(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const data = JSON.parse(e.target.result);
+                            
+                            if (!data.orders || !data.expenses || !data.stocks) {
+                                reject(new Error('File non valido'));
+                                return;
+                            }
+
+                            const stats = {
+                                orders: data.orders.length,
+                                expenses: data.expenses.length,
+                                stocks: data.stocks.length,
+                                exportDate: data.exportDate
+                            };
+
+                            resolve({ data, stats });
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    reader.onerror = reject;
+                    reader.readAsText(file);
+                });
+            },
+
+            restoreData(data) {
+                localStorage.setItem('orders', JSON.stringify(data.orders));
+                localStorage.setItem('expenses', JSON.stringify(data.expenses));
+                localStorage.setItem('stocks', JSON.stringify(data.stocks));
+            }
+        };
+
+        // =================================================================
+        // UTILS
+        // =================================================================
+        const formatCurrency = (value) => {
+            if (value === null || value === undefined) return '—';
+            return value.toLocaleString('it-IT', { style: 'currency', currency: 'EUR' });
+        };
+
+        const formatDate = (dateString) => {
+            return new Date(dateString).toLocaleDateString('it-IT', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+            });
+        };
+
+        const formatDateTime = (dateString) => {
+            return new Date(dateString).toLocaleString('it-IT', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+
+        // =================================================================
+        // ICONS
+        // =================================================================
+        const PlusIcon = () => (
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+        );
+        const EditIcon = () => (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L16.732 3.732z" />
+            </svg>
+        );
+        const TrashIcon = () => (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+        );
+        const SaveIcon = () => (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        );
+        const CloseIcon = () => (
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        );
+        const DownloadIcon = () => (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+        );
+        const UploadIcon = () => (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+        );
+        const DatabaseIcon = () => (
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+            </svg>
+        );
+
+        // =================================================================
+        // MODAL
+        // =================================================================
+        const Modal = ({ title, onClose, children, maxWidth = "max-w-3xl" }) => {
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className={`bg-white rounded-lg shadow-2xl w-full ${maxWidth} max-h-[90vh] flex flex-col`}>
+                        <div className="flex justify-between items-center p-4 border-b border-slate-200">
+                            <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+                            <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100">
+                                <CloseIcon />
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto p-4">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // =================================================================
+        // BACKUP MODAL
+        // =================================================================
+        const BackupModal = ({ onClose, onDataRestored }) => {
+            const fileInputRef = useRef(null);
+            const [importing, setImporting] = useState(false);
+
+            const handleExport = () => {
+                BackupManager.exportAllData();
+                alert('Backup completo esportato con successo!\n\nSalva il file JSON su iCloud, Google Drive o Dropbox per sicurezza.');
+            };
+
+            const handleImport = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                setImporting(true);
+                try {
+                    const { data, stats } = await BackupManager.importAllData(file);
+                    
+                    const message = `Backup trovato:\n\n` +
+                        `📦 Ordini: ${stats.orders}\n` +
+                        `💰 Spese: ${stats.expenses}\n` +
+                        `📊 Scorte: ${stats.stocks}\n` +
+                        `📅 Data backup: ${formatDateTime(stats.exportDate)}\n\n` +
+                        `ATTENZIONE: Questo sostituirà tutti i dati attuali!\n\n` +
+                        `Vuoi procedere con il ripristino?`;
+
+                    if (window.confirm(message)) {
+                        BackupManager.restoreData(data);
+                        alert('✅ Dati ripristinati con successo!\n\nRicarica la pagina per vedere i dati aggiornati.');
+                        onDataRestored();
+                    }
+                } catch (error) {
+                    console.error('Errore import:', error);
+                    alert('❌ Errore durante l\'importazione del backup.\n\nAssicurati che il file sia un backup valido.');
+                }
+                setImporting(false);
+                e.target.value = '';
+            };
+
+            const totalOrders = JSON.parse(localStorage.getItem('orders') || '[]').length;
+            const totalExpenses = JSON.parse(localStorage.getItem('expenses') || '[]').length;
+            const totalStocks = JSON.parse(localStorage.getItem('stocks') || '[]').length;
+
+            return (
+                <Modal title="Backup Completo" onClose={onClose} maxWidth="max-w-md">
+                    <div className="space-y-4">
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <h3 className="font-semibold text-blue-900 mb-2 flex items-center gap-2">
+                                <DatabaseIcon />
+                                Dati Attuali
+                            </h3>
+                            <div className="space-y-1 text-sm text-blue-800">
+                                <p>📦 Ordini: <strong>{totalOrders}</strong></p>
+                                <p>💰 Spese: <strong>{totalExpenses}</strong></p>
+                                <p>📊 Scorte: <strong>{totalStocks}</strong></p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <button
+                                onClick={handleExport}
+                                className="w-full bg-green-600 text-white rounded-lg py-3 hover:bg-green-700 flex items-center justify-center gap-2 font-medium transition-colors"
+                            >
+                                <DownloadIcon />
+                                Esporta Backup Completo
+                            </button>
+                            
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".json"
+                                onChange={handleImport}
+                                className="hidden"
+                            />
+                            
+                            <button
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={importing}
+                                className="w-full bg-orange-600 text-white rounded-lg py-3 hover:bg-orange-700 disabled:opacity-50 flex items-center justify-center gap-2 font-medium transition-colors"
+                            >
+                                <UploadIcon />
+                                {importing ? 'Importazione...' : 'Importa Backup Completo'}
+                            </button>
+                        </div>
+
+                        <div className="bg-slate-50 rounded-lg p-4 text-sm text-slate-600">
+                            <p className="font-semibold mb-2">💡 Come funziona:</p>
+                            <ul className="space-y-1 list-disc list-inside">
+                                <li><strong>Esporta</strong>: Salva tutti i dati in un file JSON</li>
+                                <li><strong>Importa</strong>: Ripristina i dati da backup</li>
+                                <li>Salva il file su iCloud/Google Drive</li>
+                                <li>Trasferisci tra dispositivi</li>
+                            </ul>
+                        </div>
+                    </div>
+                </Modal>
+            );
+        };
+
+        // =================================================================
+        // ORDINI - FORM E VISTA
+        // =================================================================
+        const CompactOrderForm = ({ onSave, initialOrder }) => {
+            const [customer, setCustomer] = useState(initialOrder?.customer || '');
+            const [article, setArticle] = useState(initialOrder?.article || '');
+            const [quantity, setQuantity] = useState(initialOrder?.quantity || 1);
+            const [salePrice, setSalePrice] = useState(initialOrder?.salePrice?.toString() || '');
+            const [date, setDate] = useState(initialOrder?.date || new Date().toISOString().split('T')[0]);
+            const [status, setStatus] = useState(initialOrder?.status || OrderStatus.DaIniziare);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!customer || !article || quantity <= 0 || salePrice === '' || Number(salePrice) < 0) {
+                    alert('Compila tutti i campi obbligatori');
+                    return;
+                }
+                onSave({
+                    id: initialOrder?.id || new Date().toISOString() + Math.random(),
+                    date,
+                    customer,
+                    article,
+                    status,
+                    quantity: Number(quantity),
+                    salePrice: Number(salePrice),
+                    cloudLink: initialOrder?.cloudLink || ''
+                });
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className="space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Cliente *</label>
+                            <input type="text" value={customer} onChange={e => setCustomer(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Articolo *</label>
+                            <input type="text" value={article} onChange={e => setArticle(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Quantità *</label>
+                            <input type="number" value={quantity} onChange={e => setQuantity(parseInt(e.target.value) || 0)} min="1" required className="compact-input block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Prezzo € *</label>
+                            <input type="number" value={salePrice} onChange={e => setSalePrice(e.target.value)} min="0" step="0.01" required className="compact-input block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Data *</label>
+                            <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Stato *</label>
+                            <select value={status} onChange={e => setStatus(e.target.value)} className="compact-select block w-full rounded border-slate-300 border focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                                {Object.values(OrderStatus).map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="bg-slate-50 p-3 rounded">
+                        <span className="text-sm font-medium text-slate-600">Totale: </span>
+                        <span className="text-lg font-bold text-slate-900">
+                            {quantity > 0 && salePrice ? formatCurrency(quantity * Number(salePrice)) : '€ 0,00'}
+                        </span>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2">
+                            <SaveIcon /> {initialOrder ? 'Aggiorna' : 'Salva'} Ordine
+                        </button>
+                    </div>
+                </form>
+            );
+        };
+
+        const CompactOrderItem = ({ order, onEdit, onDelete }) => {
+            const statusColors = { 
+                [OrderStatus.DaIniziare]: 'bg-slate-100 text-slate-700', 
+                [OrderStatus.InSvolgimento]: 'bg-yellow-100 text-yellow-700', 
+                [OrderStatus.Terminato]: 'bg-green-100 text-green-700' 
+            };
+            const total = order.quantity * order.salePrice;
+            
+            return (
+                <div className="bg-white rounded shadow-sm compact-card hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <h3 className="text-sm font-bold text-slate-800">{order.customer}</h3>
+                                <span className={`px-2 py-0.5 text-xs font-semibold rounded ${statusColors[order.status]}`}>{order.status}</span>
+                            </div>
+                            <p className="text-xs text-slate-600 mb-1">{order.article}</p>
+                            <div className="flex gap-3 text-xs text-slate-500 flex-wrap">
+                                <span>{formatDate(order.date)}</span>
+                                <span>Qtà: {order.quantity}</span>
+                                <span>Prezzo: {formatCurrency(order.salePrice)}</span>
+                                <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
+                            </div>
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                            <button onClick={() => onEdit(order)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors" title="Modifica">
+                                <EditIcon />
+                            </button>
+                            <button onClick={() => onDelete(order.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-full transition-colors" title="Elimina">
+                                <TrashIcon />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const OrdersView = () => {
+            const [orders, setOrders] = useLocalStorage('orders', []);
+            const [showForm, setShowForm] = useState(false);
+            const [editingOrder, setEditingOrder] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const handleSaveOrder = (orderData) => {
+                if (editingOrder) {
+                    setOrders(orders.map(o => o.id === orderData.id ? orderData : o));
+                } else {
+                    setOrders([...orders, orderData]);
+                }
+                setShowForm(false);
+                setEditingOrder(null);
+            };
+
+            const handleEdit = (order) => {
+                setEditingOrder(order);
+                setShowForm(true);
+            };
+
+            const handleDeleteOrder = (id) => {
+                if (window.confirm("Eliminare questo ordine?")) {
+                    setOrders(orders.filter(o => o.id !== id));
+                }
+            };
+
+            const handleExportExcel = () => {
+                const dataToExport = sortedOrders.map(o => ({
+                    'Data': formatDate(o.date),
+                    'Cliente': o.customer,
+                    'Articolo': o.article,
+                    'Quantità': o.quantity,
+                    'Prezzo Vendita (€)': o.salePrice,
+                    'Totale (€)': o.quantity * o.salePrice,
+                    'Stato': o.status
+                }));
+                const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Ordini");
+                XLSX.writeFile(workbook, `ordini_${new Date().toISOString().split('T')[0]}.xlsx`);
+            };
+
+            const handleExportPdf = () => {
+                const doc = new jspdf.jsPDF();
+                doc.text('Ordini', 14, 15);
+                doc.autoTable({
+                    startY: 20,
+                    head: [['Data', 'Cliente', 'Articolo', 'Qtà', 'Prezzo', 'Totale', 'Stato']],
+                    body: sortedOrders.map(o => [
+                        formatDate(o.date),
+                        o.customer,
+                        o.article,
+                        o.quantity,
+                        formatCurrency(o.salePrice),
+                        formatCurrency(o.quantity * o.salePrice),
+                        o.status
+                    ])
+                });
+                doc.save(`ordini_${new Date().toISOString().split('T')[0]}.pdf`);
+            };
+
+            const handleImportExcel = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                try {
+                    const data = await file.arrayBuffer();
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                    if (jsonData.length === 0) {
+                        alert('Il file Excel è vuoto.');
+                        return;
+                    }
+
+                    const importedOrders = jsonData.map(row => ({
+                        id: new Date().toISOString() + Math.random(),
+                        date: new Date().toISOString().split('T')[0],
+                        customer: row['Cliente'] || '',
+                        article: row['Articolo'] || '',
+                        quantity: Number(row['Quantità']) || 0,
+                        salePrice: Number(row['Prezzo Vendita (€)']) || 0,
+                        status: row['Stato'] || OrderStatus.DaIniziare,
+                        cloudLink: ''
+                    }));
+
+                    if (orders.length > 0 && !window.confirm(`Aggiungere ${importedOrders.length} ordini a quelli esistenti?`)) {
+                        e.target.value = '';
+                        return;
+                    }
+
+                    setOrders([...orders, ...importedOrders]);
+                    alert(`✅ Importati ${importedOrders.length} ordini!`);
+                } catch (error) {
+                    alert('❌ Errore durante l\'importazione.');
+                }
+                e.target.value = '';
+            };
+
+            const sortedOrders = [...orders].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            return (
+                <div>
+                    <div className="flex gap-2 mb-3">
+                        <button onClick={() => { setEditingOrder(null); setShowForm(true); }} className="flex-1 bg-blue-600 text-white rounded-lg py-3 hover:bg-blue-700 flex items-center justify-center gap-2 font-medium shadow-sm transition-colors">
+                            <PlusIcon /> Nuovo Ordine
+                        </button>
+                    </div>
+
+                    <div className="flex gap-2 mb-3 flex-wrap">
+                        <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleImportExcel} className="hidden" />
+                        <button onClick={() => fileInputRef.current?.click()} className="flex-1 min-w-[140px] bg-white text-blue-600 border-2 border-blue-600 rounded-lg py-2 hover:bg-blue-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <UploadIcon /> Importa Excel
+                        </button>
+                        <button onClick={handleExportExcel} disabled={sortedOrders.length === 0} className="flex-1 min-w-[140px] bg-green-600 text-white rounded-lg py-2 hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> Excel
+                        </button>
+                        <button onClick={handleExportPdf} disabled={sortedOrders.length === 0} className="flex-1 min-w-[140px] bg-red-600 text-white rounded-lg py-2 hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> PDF
+                        </button>
+                    </div>
+
+                    {sortedOrders.length > 0 ? (
+                        <div className="space-y-2">
+                            {sortedOrders.map(order => (
+                                <CompactOrderItem key={order.id} order={order} onEdit={handleEdit} onDelete={handleDeleteOrder} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-center py-16 bg-white rounded-lg shadow-sm">
+                            <p className="text-slate-500">Nessun ordine presente</p>
+                        </div>
+                    )}
+
+                    {showForm && (
+                        <Modal title={editingOrder ? "Modifica Ordine" : "Nuovo Ordine"} onClose={() => { setShowForm(false); setEditingOrder(null); }}>
+                            <CompactOrderForm onSave={handleSaveOrder} initialOrder={editingOrder} />
+                        </Modal>
+                    )}
+                </div>
+            );
+        };
+
+        // =================================================================
+        // SPESE - FORM E VISTA
+        // =================================================================
+        const CompactExpenseForm = ({ onSave, initialExpense }) => {
+            const [description, setDescription] = useState(initialExpense?.description || '');
+            const [quantity, setQuantity] = useState(initialExpense?.quantity || 1);
+            const [price, setPrice] = useState(initialExpense?.price?.toString() || '');
+            const [date, setDate] = useState(initialExpense?.date || new Date().toISOString().split('T')[0]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!description || quantity <= 0 || price === '' || Number(price) < 0) {
+                    alert('Compila tutti i campi obbligatori');
+                    return;
+                }
+                onSave({
+                    id: initialExpense?.id || new Date().toISOString() + Math.random(),
+                    date,
+                    description,
+                    quantity: Number(quantity),
+                    price: Number(price)
+                });
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className="space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Descrizione *</label>
+                            <input type="text" value={description} onChange={e => setDescription(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Quantità *</label>
+                            <input type="number" value={quantity} onChange={e => setQuantity(parseInt(e.target.value) || 0)} min="1" required className="compact-input block w-full rounded border-slate-300 border focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Prezzo € *</label>
+                            <input type="number" value={price} onChange={e => setPrice(e.target.value)} min="0" step="0.01" required className="compact-input block w-full rounded border-slate-300 border focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Data *</label>
+                            <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
+                        </div>
+                    </div>
+                    <div className="bg-slate-50 p-3 rounded">
+                        <span className="text-sm font-medium text-slate-600">Totale: </span>
+                        <span className="text-lg font-bold text-slate-900">
+                            {quantity > 0 && price ? formatCurrency(quantity * Number(price)) : '€ 0,00'}
+                        </span>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 flex items-center gap-2">
+                            <SaveIcon /> {initialExpense ? 'Aggiorna' : 'Salva'} Spesa
+                        </button>
+                    </div>
+                </form>
+            );
+        };
+
+        const CompactExpenseItem = ({ expense, onEdit, onDelete }) => {
+            const total = expense.quantity * expense.price;
+            
+            return (
+                <div className="bg-white rounded shadow-sm compact-card hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                            <h3 className="text-sm font-bold text-slate-800 mb-1">{expense.description}</h3>
+                            <div className="flex gap-3 text-xs text-slate-500 flex-wrap">
+                                <span>{formatDate(expense.date)}</span>
+                                <span>Qtà: {expense.quantity}</span>
+                                <span>Prezzo: {formatCurrency(expense.price)}</span>
+                                <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
+                            </div>
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                            <button onClick={() => onEdit(expense)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-full transition-colors" title="Modifica">
+                                <EditIcon />
+                            </button>
+                            <button onClick={() => onDelete(expense.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-full transition-colors" title="Elimina">
+                                <TrashIcon />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const ExpensesView = () => {
+            const [expenses, setExpenses] = useLocalStorage('expenses', []);
+            const [showForm, setShowForm] = useState(false);
+            const [editingExpense, setEditingExpense] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const handleSaveExpense = (expenseData) => {
+                if (editingExpense) {
+                    setExpenses(expenses.map(e => e.id === expenseData.id ? expenseData : e));
+                } else {
+                    setExpenses([...expenses, expenseData]);
+                }
+                setShowForm(false);
+                setEditingExpense(null);
+            };
+
+            const handleEdit = (expense) => {
+                setEditingExpense(expense);
+                setShowForm(true);
+            };
+
+            const handleDeleteExpense = (id) => {
+                if (window.confirm("Eliminare questa spesa?")) {
+                    setExpenses(expenses.filter(e => e.id !== id));
+                }
+            };
+
+            const handleExportExcel = () => {
+                const dataToExport = sortedExpenses.map(e => ({
+                    'Data': formatDate(e.date),
+                    'Descrizione': e.description,
+                    'Quantità': e.quantity,
+                    'Prezzo (€)': e.price,
+                    'Totale (€)': e.quantity * e.price
+                }));
+                const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Spese");
+                XLSX.writeFile(workbook, `spese_${new Date().toISOString().split('T')[0]}.xlsx`);
+            };
+
+            const handleExportPdf = () => {
+                const doc = new jspdf.jsPDF();
+                doc.text('Spese', 14, 15);
+                doc.autoTable({
+                    startY: 20,
+                    head: [['Data', 'Descrizione', 'Qtà', 'Prezzo', 'Totale']],
+                    body: sortedExpenses.map(e => [
+                        formatDate(e.date),
+                        e.description,
+                        e.quantity,
+                        formatCurrency(e.price),
+                        formatCurrency(e.quantity * e.price)
+                    ])
+                });
+                doc.save(`spese_${new Date().toISOString().split('T')[0]}.pdf`);
+            };
+
+            const handleImportExcel = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                try {
+                    const data = await file.arrayBuffer();
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                    if (jsonData.length === 0) {
+                        alert('Il file Excel è vuoto.');
+                        return;
+                    }
+
+                    const importedExpenses = jsonData.map(row => ({
+                        id: new Date().toISOString() + Math.random(),
+                        date: new Date().toISOString().split('T')[0],
+                        description: row['Descrizione'] || '',
+                        quantity: Number(row['Quantità']) || 0,
+                        price: Number(row['Prezzo (€)']) || 0
+                    }));
+
+                    if (expenses.length > 0 && !window.confirm(`Aggiungere ${importedExpenses.length} spese a quelle esistenti?`)) {
+                        e.target.value = '';
+                        return;
+                    }
+
+                    setExpenses([...expenses, ...importedExpenses]);
+                    alert(`✅ Importate ${importedExpenses.length} spese!`);
+                } catch (error) {
+                    alert('❌ Errore durante l\'importazione.');
+                }
+                e.target.value = '';
+            };
+
+            const sortedExpenses = [...expenses].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            return (
+                <div>
+                    <div className="flex gap-2 mb-3">
+                        <button onClick={() => { setEditingExpense(null); setShowForm(true); }} className="flex-1 bg-emerald-600 text-white rounded-lg py-3 hover:bg-emerald-700 flex items-center justify-center gap-2 font-medium shadow-sm transition-colors">
+                            <PlusIcon /> Nuova Spesa
+                        </button>
+                    </div>
+
+                    <div className="flex gap-2 mb-3 flex-wrap">
+                        <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleImportExcel} className="hidden" />
+                        <button onClick={() => fileInputRef.current?.click()} className="flex-1 min-w-[140px] bg-white text-emerald-600 border-2 border-emerald-600 rounded-lg py-2 hover:bg-emerald-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <UploadIcon /> Importa Excel
+                        </button>
+                        <button onClick={handleExportExcel} disabled={sortedExpenses.length === 0} className="flex-1 min-w-[140px] bg-green-600 text-white rounded-lg py-2 hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> Excel
+                        </button>
+                        <button onClick={handleExportPdf} disabled={sortedExpenses.length === 0} className="flex-1 min-w-[140px] bg-red-600 text-white rounded-lg py-2 hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> PDF
+                        </button>
+                    </div>
+
+                    {sortedExpenses.length > 0 ? (
+                        <div className="space-y-2">
+                            {sortedExpenses.map(expense => (
+                                <CompactExpenseItem key={expense.id} expense={expense} onEdit={handleEdit} onDelete={handleDeleteExpense} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-center py-16 bg-white rounded-lg shadow-sm">
+                            <p className="text-slate-500">Nessuna spesa presente</p>
+                        </div>
+                    )}
+
+                    {showForm && (
+                        <Modal title={editingExpense ? "Modifica Spesa" : "Nuova Spesa"} onClose={() => { setShowForm(false); setEditingExpense(null); }}>
+                            <CompactExpenseForm onSave={handleSaveExpense} initialExpense={editingExpense} />
+                        </Modal>
+                    )}
+                </div>
+            );
+        };
+
+        // =================================================================
+        // SCORTE - FORM E VISTA
+        // =================================================================
+        const CompactStockForm = ({ onSave, initialStock }) => {
+            const [article, setArticle] = useState(initialStock?.article || '');
+            const [initialQuantity, setInitialQuantity] = useState(initialStock?.initialQuantity || 0);
+            const [availableQuantity, setAvailableQuantity] = useState(initialStock?.availableQuantity || 0);
+            const [purchasePrice, setPurchasePrice] = useState(initialStock?.purchasePrice?.toString() || '');
+            const [notes, setNotes] = useState(initialStock?.notes || '');
+            const [date, setDate] = useState(initialStock?.date || new Date().toISOString().split('T')[0]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!article || purchasePrice === '' || Number(purchasePrice) < 0) {
+                    alert('Compila tutti i campi obbligatori');
+                    return;
+                }
+                onSave({
+                    id: initialStock?.id || new Date().toISOString() + Math.random(),
+                    date,
+                    article,
+                    initialQuantity: Number(initialQuantity),
+                    availableQuantity: Number(availableQuantity),
+                    purchasePrice: Number(purchasePrice),
+                    notes
+                });
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className="space-y-3">
+                    <div className="grid grid-cols-1 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Articolo *</label>
+                            <input type="text" value={article} onChange={e => setArticle(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Qtà Iniziale</label>
+                            <input type="number" value={initialQuantity} onChange={e => setInitialQuantity(parseInt(e.target.value) || 0)} min="0" className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Qtà Disponibile</label>
+                            <input type="number" value={availableQuantity} onChange={e => setAvailableQuantity(parseInt(e.target.value) || 0)} min="0" className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Prezzo Acquisto € *</label>
+                            <input type="number" value={purchasePrice} onChange={e => setPurchasePrice(e.target.value)} min="0" step="0.01" required className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Data *</label>
+                            <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                        </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Note</label>
+                        <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} className="compact-input block w-full rounded border-slate-300 border focus:border-purple-500 focus:ring-1 focus:ring-purple-500" />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-2">
+                            <SaveIcon /> {initialStock ? 'Aggiorna' : 'Salva'} Scorta
+                        </button>
+                    </div>
+                </form>
+            );
+        };
+
+        const CompactStockItem = ({ stock, onEdit, onDelete }) => {
+            const usedQuantity = stock.initialQuantity - stock.availableQuantity;
+            const usagePercentage = stock.initialQuantity > 0 ? Math.round((usedQuantity / stock.initialQuantity) * 100) : 0;
+            
+            return (
+                <div className="bg-white rounded shadow-sm compact-card hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                            <h3 className="text-sm font-bold text-slate-800 mb-1">{stock.article}</h3>
+                            <div className="flex gap-3 text-xs text-slate-500 flex-wrap mb-1">
+                                <span>{formatDate(stock.date)}</span>
+                                <span>Iniziale: {stock.initialQuantity}</span>
+                                <span>Disponibile: <span className={stock.availableQuantity <= 5 ? 'text-red-600 font-semibold' : ''}>{stock.availableQuantity}</span></span>
+                                <span>Prezzo: {formatCurrency(stock.purchasePrice)}</span>
+                            </div>
+                            {stock.notes && <p className="text-xs text-slate-600 italic">{stock.notes}</p>}
+                            {stock.initialQuantity > 0 && (
+                                <div className="mt-2">
+                                    <div className="flex items-center gap-2">
+                                        <div className="flex-1 bg-slate-200 rounded-full h-1.5">
+                                            <div className={`h-1.5 rounded-full ${usagePercentage > 75 ? 'bg-red-500' : usagePercentage > 50 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${usagePercentage}%` }}></div>
+                                        </div>
+                                        <span className="text-xs text-slate-600">{usagePercentage}% usato</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                            <button onClick={() => onEdit(stock)} className="p-2 text-purple-600 hover:bg-purple-50 rounded-full transition-colors" title="Modifica">
+                                <EditIcon />
+                            </button>
+                            <button onClick={() => onDelete(stock.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-full transition-colors" title="Elimina">
+                                <TrashIcon />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const StocksView = () => {
+            const [stocks, setStocks] = useLocalStorage('stocks', []);
+            const [showForm, setShowForm] = useState(false);
+            const [editingStock, setEditingStock] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const handleSaveStock = (stockData) => {
+                if (editingStock) {
+                    setStocks(stocks.map(s => s.id === stockData.id ? stockData : s));
+                } else {
+                    setStocks([...stocks, stockData]);
+                }
+                setShowForm(false);
+                setEditingStock(null);
+            };
+
+            const handleEdit = (stock) => {
+                setEditingStock(stock);
+                setShowForm(true);
+            };
+
+            const handleDeleteStock = (id) => {
+                if (window.confirm("Eliminare questa scorta?")) {
+                    setStocks(stocks.filter(s => s.id !== id));
+                }
+            };
+
+            const handleExportExcel = () => {
+                const dataToExport = sortedStocks.map(s => ({
+                    'Data': formatDate(s.date),
+                    'Articolo': s.article,
+                    'Quantità Iniziale': s.initialQuantity,
+                    'Quantità Disponibile': s.availableQuantity,
+                    'Prezzo Acquisto (€)': s.purchasePrice,
+                    'Valore Totale (€)': s.availableQuantity * s.purchasePrice,
+                    'Note': s.notes
+                }));
+                const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Scorte");
+                XLSX.writeFile(workbook, `scorte_${new Date().toISOString().split('T')[0]}.xlsx`);
+            };
+
+            const handleExportPdf = () => {
+                const doc = new jspdf.jsPDF();
+                doc.text('Scorte', 14, 15);
+                doc.autoTable({
+                    startY: 20,
+                    head: [['Data', 'Articolo', 'Qtà Iniz.', 'Qtà Disp.', 'Prezzo', 'Valore Tot.']],
+                    body: sortedStocks.map(s => [
+                        formatDate(s.date),
+                        s.article,
+                        s.initialQuantity,
+                        s.availableQuantity,
+                        formatCurrency(s.purchasePrice),
+                        formatCurrency(s.availableQuantity * s.purchasePrice)
+                    ])
+                });
+                doc.save(`scorte_${new Date().toISOString().split('T')[0]}.pdf`);
+            };
+
+            const handleImportExcel = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                try {
+                    const data = await file.arrayBuffer();
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                    if (jsonData.length === 0) {
+                        alert('Il file Excel è vuoto.');
+                        return;
+                    }
+
+                    const importedStocks = jsonData.map(row => ({
+                        id: new Date().toISOString() + Math.random(),
+                        date: new Date().toISOString().split('T')[0],
+                        article: row['Articolo'] || '',
+                        initialQuantity: Number(row['Quantità Iniziale']) || 0,
+                        availableQuantity: Number(row['Quantità Disponibile']) || 0,
+                        purchasePrice: Number(row['Prezzo Acquisto (€)']) || 0,
+                        notes: row['Note'] || ''
+                    }));
+
+                    if (stocks.length > 0 && !window.confirm(`Aggiungere ${importedStocks.length} scorte a quelle esistenti?`)) {
+                        e.target.value = '';
+                        return;
+                    }
+
+                    setStocks([...stocks, ...importedStocks]);
+                    alert(`✅ Importate ${importedStocks.length} scorte!`);
+                } catch (error) {
+                    alert('❌ Errore durante l\'importazione.');
+                }
+                e.target.value = '';
+            };
+
+            const sortedStocks = [...stocks].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            return (
+                <div>
+                    <div className="flex gap-2 mb-3">
+                        <button onClick={() => { setEditingStock(null); setShowForm(true); }} className="flex-1 bg-purple-600 text-white rounded-lg py-3 hover:bg-purple-700 flex items-center justify-center gap-2 font-medium shadow-sm transition-colors">
+                            <PlusIcon /> Nuova Scorta
+                        </button>
+                    </div>
+
+                    <div className="flex gap-2 mb-3 flex-wrap">
+                        <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleImportExcel} className="hidden" />
+                        <button onClick={() => fileInputRef.current?.click()} className="flex-1 min-w-[140px] bg-white text-purple-600 border-2 border-purple-600 rounded-lg py-2 hover:bg-purple-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <UploadIcon /> Importa Excel
+                        </button>
+                        <button onClick={handleExportExcel} disabled={sortedStocks.length === 0} className="flex-1 min-w-[140px] bg-green-600 text-white rounded-lg py-2 hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> Excel
+                        </button>
+                        <button onClick={handleExportPdf} disabled={sortedStocks.length === 0} className="flex-1 min-w-[140px] bg-red-600 text-white rounded-lg py-2 hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium">
+                            <DownloadIcon /> PDF
+                        </button>
+                    </div>
+
+                    {sortedStocks.length > 0 ? (
+                        <div className="space-y-2">
+                            {sortedStocks.map(stock => (
+                                <CompactStockItem key={stock.id} stock={stock} onEdit={handleEdit} onDelete={handleDeleteStock} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-center py-16 bg-white rounded-lg shadow-sm">
+                            <p className="text-slate-500">Nessuna scorta presente</p>
+                        </div>
+                    )}
+
+                    {showForm && (
+                        <Modal title={editingStock ? "Modifica Scorta" : "Nuova Scorta"} onClose={() => { setShowForm(false); setEditingStock(null); }}>
+                            <CompactStockForm onSave={handleSaveStock} initialStock={editingStock} />
+                        </Modal>
+                    )}
+                </div>
+            );
+        };
+
+        // =================================================================
+        // MAIN APP
+        // =================================================================
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('orders');
+            const [showBackup, setShowBackup] = useState(false);
+
+            const tabs = {
+                orders: { label: 'Ordini', color: 'blue' },
+                expenses: { label: 'Spese', color: 'emerald' },
+                stocks: { label: 'Scorte', color: 'purple' }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-100">
+                    <header className="bg-white shadow-sm sticky top-0 z-40">
+                        <div className="max-w-6xl mx-auto px-4 py-3">
+                            <div className="flex items-center justify-between gap-4">
+                                <h1 className="text-lg font-bold text-slate-900">Gestione Attività</h1>
+                                <div className="flex gap-2">
+                                    {Object.entries(tabs).map(([key, tab]) => (
+                                        <button 
+                                            key={key} 
+                                            onClick={() => setActiveTab(key)} 
+                                            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                                                activeTab === key 
+                                                    ? `bg-${tab.color}-600 text-white shadow-sm` 
+                                                    : 'bg-white text-slate-600 hover:bg-slate-100'
+                                            }`}
+                                        >
+                                            {tab.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setShowBackup(true)} className="p-2 text-white bg-indigo-600 hover:bg-indigo-700 rounded-full transition-colors" title="Backup Completo">
+                                    <DatabaseIcon />
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-6xl mx-auto px-4 py-4">
+                        {activeTab === 'orders' && <OrdersView />}
+                        {activeTab === 'expenses' && <ExpensesView />}
+                        {activeTab === 'stocks' && <StocksView />}
+                    </main>
+
+                    {showBackup && <BackupModal onClose={() => setShowBackup(false)} onDataRestored={() => window.location.reload()} />}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<StrictMode><App /></StrictMode>);
+    </script>
+</body>
+</html>
