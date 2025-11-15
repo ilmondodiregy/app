@@ -1,14 +1,8 @@
-const CACHE_NAME = 'gestione-attivita-v3.1';
+const CACHE_NAME = 'gestione-attivita-v3.2';
+
+// Solo risorse locali - CDN esterni saranno cachati automaticamente quando richiesti
 const urlsToCache = [
-  './index.html',
-  'https://cdn.tailwindcss.com',
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone/babel.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js',
-  'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js'
+  './index.html'
 ];
 
 // Installazione - caching delle risorse
@@ -20,7 +14,13 @@ self.addEventListener('install', event => {
         console.log('[SW] Caching app shell');
         return cache.addAll(urlsToCache);
       })
-      .then(() => self.skipWaiting())
+      .then(() => {
+        console.log('[SW] ✅ Service Worker installed successfully');
+        self.skipWaiting();
+      })
+      .catch(err => {
+        console.error('[SW] ❌ Cache install failed:', err);
+      })
   );
 });
 
