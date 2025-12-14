@@ -260,7 +260,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef, StrictMode, useMemo } = React;
+        const { useState, useEffect, useRef, StrictMode, useMemo, useCallback } = React;
 
         // =================================================================
         // FIREBASE CONFIGURATION & INITIALIZATION
@@ -1219,11 +1219,13 @@
                                         ...data
                                     };
                                 });
+                                console.log(`🔥 useFirestore(${collectionName}): Loaded ${items.length} items`);
                                 setData(items);
                                 setLoading(false);
                             },
                             (err) => {
-                                console.error(`Firestore error (${collectionName}):`, err);
+                                console.error(`❌ Firestore error (${collectionName}):`, err);
+                                console.error(`   Code: ${err.code}, Message: ${err.message}`);
                                 setError(err);
                                 setLoading(false);
                             }
@@ -1354,13 +1356,195 @@
         }
 
         // =================================================================
-        // MIGRATION SCRIPT - localStorage to Firebase
+        // DATA INTEGRITY & SYNC SYSTEM
+        // =================================================================
+
+        // ⭐ NUOVO: Hook per verificare integrità dati
+        function useDataIntegrity() {
+            const [report, setReport] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const { data: orders } = useFirestore('orders');
+            const { data: expenses } = useFirestore('expenses');
+            const { data: stockMovements } = useFirestore('stockMovements');
+            const { data: customersArchive } = useFirestore('customersArchive');
+            const { data: articlesArchive } = useFirestore('articlesArchive');
+
+            const checkIntegrity = useCallback(() => {
+                setLoading(true);
+
+                const localOrders = JSON.parse(localStorage.getItem('orders') || '[]');
+                const localExpenses = JSON.parse(localStorage.getItem('expenses') || '[]');
+                const localStocks = JSON.parse(localStorage.getItem('stockMovements') || '[]');
+                const localCustomers = JSON.parse(localStorage.getItem('customers') || '[]');
+                const localArticles = JSON.parse(localStorage.getItem('articles') || '[]');
+
+                console.log('🔍 DEBUG checkIntegrity:');
+                console.log('  - orders from useFirestore:', orders ? orders.length : 'null');
+                console.log('  - expenses from useFirestore:', expenses ? expenses.length : 'null');
+                console.log('  - stockMovements from useFirestore:', stockMovements ? stockMovements.length : 'null');
+
+                // ⭐ LOGICA CORRETTA: Firebase è la source of truth
+                // Missing = quanti dati localStorage NON sono ancora su Firebase (deve essere 0)
+                // Firebase può avere PIÙ dati di localStorage (è normale)
+                const result = {
+                    timestamp: new Date().toISOString(),
+                    orders: {
+                        local: localOrders.length,
+                        firebase: (orders || []).length,
+                        missing: Math.max(0, localOrders.length - (orders || []).length),
+                        status: (orders || []).length >= localOrders.length ? 'OK' : 'MISMATCH'
+                    },
+                    expenses: {
+                        local: localExpenses.length,
+                        firebase: (expenses || []).length,
+                        missing: Math.max(0, localExpenses.length - (expenses || []).length),
+                        status: (expenses || []).length >= localExpenses.length ? 'OK' : 'MISMATCH'
+                    },
+                    stockMovements: {
+                        local: localStocks.length,
+                        firebase: (stockMovements || []).length,
+                        missing: Math.max(0, localStocks.length - (stockMovements || []).length),
+                        status: (stockMovements || []).length >= localStocks.length ? 'OK' : 'MISMATCH'
+                    },
+                    customers: {
+                        local: localCustomers.length,
+                        firebase: (customersArchive || []).length,
+                        missing: Math.max(0, localCustomers.length - (customersArchive || []).length),
+                        status: (customersArchive || []).length >= localCustomers.length ? 'OK' : 'MISMATCH'
+                    },
+                    articles: {
+                        local: localArticles.length,
+                        firebase: (articlesArchive || []).length,
+                        missing: Math.max(0, localArticles.length - (articlesArchive || []).length),
+                        status: (articlesArchive || []).length >= localArticles.length ? 'OK' : 'MISMATCH'
+                    }
+                };
+
+                result.overall = Object.values(result)
+                    .filter(v => typeof v === 'object' && v.status)
+                    .every(v => v.status === 'OK') ? 'OK' : 'ALERT';
+
+                setReport(result);
+                setLoading(false);
+
+                return result;
+            }, [orders, expenses, stockMovements, customersArchive, articlesArchive]);
+
+            return { report, loading, checkIntegrity };
+        }
+
+        // =================================================================
+        // MIGRATION SCRIPT - localStorage to Firebase - COMPLETO
         // =================================================================
         async function migrateLocalStorageToFirebase() {
-            console.log('🔄 Starting migration: localStorage → Firebase...');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🔄 MIGRAZIONE COMPLETA: localStorage → Firebase');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
             try {
-                // 1. Migrate stockThresholds
+                let totalMigrated = 0;
+
+                // 1. ⭐ MIGRATE ORDERS
+                const localOrders = JSON.parse(localStorage.getItem('orders') || '[]');
+                console.log(`📦 Ordini locali trovati: ${localOrders.length}`);
+
+                // DEBUG: Verifica conteggio ordini già presenti
+                const existingOrdersSnapshot = await db.collection('orders').get();
+                console.log(`🔍 Ordini già su Firebase: ${existingOrdersSnapshot.size}`);
+
+                for (const order of localOrders) {
+                    // Verifica se esiste già (evita duplicati)
+                    const existing = await db.collection('orders').doc(order.id).get();
+                    if (!existing.exists) {
+                        console.log(`➕ Migrando ordine: ${order.id}`);
+                        await db.collection('orders').doc(order.id).set({
+                            ...order,
+                            // Aggiungi campi obbligatori per security rules
+                            createdAt: order.createdAt || firebase.firestore.FieldValue.serverTimestamp(),
+                            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            migratedFrom: 'localStorage',
+                            migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        totalMigrated++;
+                    } else {
+                        console.log(`⏭️ Ordine già presente: ${order.id}`);
+                    }
+                }
+                console.log(`✅ ${totalMigrated} ordini migrati su Firebase`);
+
+                // 2. ⭐ MIGRATE EXPENSES
+                totalMigrated = 0;
+                const localExpenses = JSON.parse(localStorage.getItem('expenses') || '[]');
+                console.log(`💸 Spese locali trovate: ${localExpenses.length}`);
+                for (const expense of localExpenses) {
+                    const existing = await db.collection('expenses').doc(expense.id).get();
+                    if (!existing.exists) {
+                        await db.collection('expenses').doc(expense.id).set({
+                            ...expense,
+                            createdAt: expense.createdAt || firebase.firestore.FieldValue.serverTimestamp(),
+                            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            migratedFrom: 'localStorage',
+                            migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        totalMigrated++;
+                    }
+                }
+                console.log(`✅ ${totalMigrated} spese migrate su Firebase`);
+
+                // 3. ⭐ MIGRATE STOCK MOVEMENTS
+                totalMigrated = 0;
+                const localStocks = JSON.parse(localStorage.getItem('stockMovements') || '[]');
+                console.log(`📊 Movimenti scorte locali trovati: ${localStocks.length}`);
+                for (const stock of localStocks) {
+                    const existing = await db.collection('stockMovements').doc(stock.id).get();
+                    if (!existing.exists) {
+                        await db.collection('stockMovements').doc(stock.id).set({
+                            ...stock,
+                            createdAt: stock.createdAt || firebase.firestore.FieldValue.serverTimestamp(),
+                            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            migratedFrom: 'localStorage',
+                            migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        totalMigrated++;
+                    }
+                }
+                console.log(`✅ ${totalMigrated} movimenti scorte migrati su Firebase`);
+
+                // 4. ⭐ MIGRATE CUSTOMERS ARCHIVE
+                totalMigrated = 0;
+                const localCustomers = JSON.parse(localStorage.getItem('customers') || '[]');
+                console.log(`👥 Clienti locali trovati: ${localCustomers.length}`);
+                for (const customer of localCustomers) {
+                    const existing = await db.collection('customersArchive').doc(customer.id).get();
+                    if (!existing.exists) {
+                        await db.collection('customersArchive').doc(customer.id).set({
+                            ...customer,
+                            migratedFrom: 'localStorage',
+                            migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        totalMigrated++;
+                    }
+                }
+                console.log(`✅ ${totalMigrated} clienti migrati su Firebase`);
+
+                // 5. ⭐ MIGRATE ARTICLES ARCHIVE
+                totalMigrated = 0;
+                const localArticles = JSON.parse(localStorage.getItem('articles') || '[]');
+                console.log(`📝 Articoli locali trovati: ${localArticles.length}`);
+                for (const article of localArticles) {
+                    const existing = await db.collection('articlesArchive').doc(article.id).get();
+                    if (!existing.exists) {
+                        await db.collection('articlesArchive').doc(article.id).set({
+                            ...article,
+                            migratedFrom: 'localStorage',
+                            migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        totalMigrated++;
+                    }
+                }
+                console.log(`✅ ${totalMigrated} articoli migrati su Firebase`);
+
+                // 6. Migrate stockThresholds
                 const thresholds = JSON.parse(localStorage.getItem('stockThresholds') || '{}');
                 if (Object.keys(thresholds).length > 0) {
                     await db.collection('settings').doc('stockThresholds').set({
@@ -1371,7 +1555,7 @@
                     console.log('✅ stockThresholds migrated:', Object.keys(thresholds).length, 'items');
                 }
 
-                // 2. Migrate trash
+                // 7. Migrate trash
                 const trash = JSON.parse(localStorage.getItem('trash') || '[]');
                 let trashMigrated = 0;
                 for (const item of trash) {
@@ -1386,11 +1570,13 @@
                     console.log('✅ trash migrated:', trashMigrated, 'items');
                 }
 
-                // 3. Mark migration as completed
+                // 8. Mark migration as completed
                 localStorage.setItem('dataFullyMigrated', 'true');
                 localStorage.setItem('dataMigrationDate', new Date().toISOString());
 
-                console.log('✅ Migration completed successfully!');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                console.log('✅ MIGRAZIONE COMPLETATA CON SUCCESSO!');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                 return true;
             } catch (error) {
                 console.error('❌ Migration failed:', error);
@@ -1398,19 +1584,146 @@
             }
         }
 
-        // Auto-migrate on first load (if not already migrated)
-        if (typeof window !== 'undefined' && !localStorage.getItem('dataFullyMigrated')) {
-            // Execute migration after Firebase is initialized
+        // ⭐ Auto-migrate SEMPRE all'avvio per garantire sincronizzazione
+        if (typeof window !== 'undefined') {
             setTimeout(() => {
                 if (db && auth.currentUser) {
+                    console.log('🔍 Verifico sincronizzazione dati...');
                     migrateLocalStorageToFirebase().then(success => {
                         if (success) {
-                            console.log('🎉 Auto-migration completed!');
+                            console.log('✅ Sincronizzazione completata!');
+                        } else {
+                            console.warn('⚠️ Alcuni dati potrebbero non essere sincronizzati');
                         }
                     });
                 }
-            }, 2000); // Wait 2s for Firebase init
+            }, 3000); // Wait 3s for Firebase init
         }
+
+        // ⭐ NUOVO: Componente Dashboard Integrità Dati
+        const DataIntegrityDashboard = () => {
+            const { report, loading, checkIntegrity } = useDataIntegrity();
+            const [syncing, setSyncing] = useState(false);
+
+            useEffect(() => {
+                checkIntegrity();
+            }, []);
+
+            const forceSyncHandler = async () => {
+                if (!window.confirm('⚠️ ATTENZIONE: Questa operazione migrerà TUTTI i dati da localStorage a Firebase. Confermi?')) {
+                    return;
+                }
+
+                setSyncing(true);
+                try {
+                    // Rimuovi flag migrazione per forzare re-sync
+                    localStorage.removeItem('dataFullyMigrated');
+                    await migrateLocalStorageToFirebase();
+
+                    // Attendi 3 secondi per permettere ai listener Firebase di aggiornarsi
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+
+                    checkIntegrity();
+                    alert('✅ Sincronizzazione forzata completata! Il report è stato aggiornato.');
+                } catch (error) {
+                    alert('❌ Errore durante la sincronizzazione: ' + error.message);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            if (loading) {
+                return <div className="p-4">Caricamento report integrità...</div>;
+            }
+
+            if (!report) {
+                return null;
+            }
+
+            const hasIssues = report.overall === 'ALERT';
+
+            return (
+                <div className="p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-2xl font-bold">🔒 Controllo Integrità Dati</h2>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={checkIntegrity}
+                                disabled={syncing || loading}
+                                className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
+                            >
+                                {loading ? '⏳ Caricamento...' : '🔍 Ricarica Report'}
+                            </button>
+                            <button
+                                onClick={forceSyncHandler}
+                                disabled={syncing || loading}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                            >
+                                {syncing ? '⏳ Sincronizzazione...' : '🔄 Forza Sincronizzazione'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Alert globale */}
+                    {hasIssues && (
+                        <div className="bg-red-100 border-2 border-red-500 rounded-lg p-4">
+                            <h3 className="text-lg font-bold text-red-800 mb-2">⚠️ ATTENZIONE: Dati non sincronizzati!</h3>
+                            <p className="text-red-700">Alcuni dati presenti in locale non sono su Firebase. Click su "Forza Sincronizzazione" per risolvere.</p>
+                        </div>
+                    )}
+
+                    {!hasIssues && (
+                        <div className="bg-green-100 border-2 border-green-500 rounded-lg p-4">
+                            <h3 className="text-lg font-bold text-green-800">✅ Tutti i dati sono sincronizzati!</h3>
+                            <p className="text-green-700">Tutti i dati di localStorage sono presenti su Firebase. Firebase è la tua source of truth!</p>
+                            <p className="text-green-600 text-sm mt-1">
+                                💡 Nota: È normale che Firebase abbia più dati di localStorage (dati creati dopo la migrazione).
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Tabella dettagli */}
+                    <div className="bg-white rounded-lg shadow overflow-hidden">
+                        <table className="w-full">
+                            <thead className="bg-slate-100">
+                                <tr>
+                                    <th className="px-4 py-2 text-left">Tipo Dato</th>
+                                    <th className="px-4 py-2 text-right">localStorage</th>
+                                    <th className="px-4 py-2 text-right">Firebase</th>
+                                    <th className="px-4 py-2 text-right">Mancanti</th>
+                                    <th className="px-4 py-2 text-center">Stato</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {Object.entries(report)
+                                    .filter(([key, val]) => typeof val === 'object' && val.status)
+                                    .map(([key, val]) => (
+                                        <tr key={key} className="border-t">
+                                            <td className="px-4 py-2 font-medium">{key}</td>
+                                            <td className="px-4 py-2 text-right">{val.local}</td>
+                                            <td className="px-4 py-2 text-right">{val.firebase}</td>
+                                            <td className={`px-4 py-2 text-right font-bold ${val.missing > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                {val.missing > 0 ? `⚠️ ${val.missing}` : '✅ 0'}
+                                            </td>
+                                            <td className="px-4 py-2 text-center">
+                                                {val.status === 'OK' ? (
+                                                    <span className="px-2 py-1 bg-green-100 text-green-800 rounded text-sm font-medium">OK</span>
+                                                ) : (
+                                                    <span className="px-2 py-1 bg-red-100 text-red-800 rounded text-sm font-medium">MISMATCH</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="text-xs text-slate-500">
+                        Ultimo controllo: {new Date(report.timestamp).toLocaleString('it-IT')}
+                    </div>
+                </div>
+            );
+        };
 
         // =================================================================
         // BACKUP MANAGER - ⚠️ DEPRECATED - USA CloudBackupManager con Firebase
@@ -6214,26 +6527,35 @@
         };
 
         // =================================================================
-        // STATISTICS VIEW
-        // =================================================================
-        // =================================================================
-        // STATISTICS VIEW - VERSIONE MIGLIORATA CON LAYOUT COMPATTO
+        // STATISTICS VIEW - VERSIONE PRO CON ANALISI TEMPORALE
         // =================================================================
         const StatisticsView = () => {
-            // 🔥 FIREBASE REAL-TIME SYNC
-            const { data: orders } = useFirestore('orders');
-            const { data: expenses } = useFirestore('expenses');
-            const { data: stockMovements } = useFirestore('stockMovements');
+            // 🔥 FIREBASE REAL-TIME SYNC con LOADING
+            const { data: orders, loading: ordersLoading } = useFirestore('orders');
+            const { data: expenses, loading: expensesLoading } = useFirestore('expenses');
+            const { data: stockMovements, loading: stocksLoading } = useFirestore('stockMovements');
             const [activeSection, setActiveSection] = useState('orders');
             const { isDark } = useDarkMode();
 
-            // FILTRI - Persistenti in localStorage
+            // ⭐ DEBUG: Log Firebase data
+            useEffect(() => {
+                console.log('📊 STATISTICHE - Dati Firebase caricati:');
+                console.log('  - Orders:', orders ? orders.length : 'null');
+                console.log('  - Expenses:', expenses ? expenses.length : 'null');
+                console.log('  - StockMovements:', stockMovements ? stockMovements.length : 'null');
+            }, [orders, expenses, stockMovements]);
+
+            // ⭐ LOADING STATE - Aspetta che tutti i dati siano caricati
+            const isLoading = ordersLoading || expensesLoading || stocksLoading;
+
+            // FILTRI - Persistenti in localStorage con nuove opzioni
             const [orderFilters, setOrderFilters] = useLocalStorage('statisticsOrderFilters', {
                 dateFrom: '',
                 dateTo: '',
                 status: 'all',
                 minAmount: '',
-                maxAmount: ''
+                maxAmount: '',
+                comparePrevious: false // Nuovo: confronto con periodo precedente
             });
 
             const [stockFilters, setStockFilters] = useLocalStorage('statisticsStockFilters', {
@@ -6243,6 +6565,12 @@
                 product: ''
             });
 
+            // UI STATE
+            const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+            const [timelineView, setTimelineView] = useState('quantity'); // 'quantity' | 'revenue' | 'orders'
+            const [visibleArticles, setVisibleArticles] = useState({}); // { articleCode: true/false }
+            const [useAllOrdersForStats, setUseAllOrdersForStats] = useState(true); // ⭐ Ignora filtri stato/importo per stats
+
             // CHARTS REFS
             const ordersChartRef = useRef(null);
             const ordersChartInstance = useRef(null);
@@ -6250,7 +6578,9 @@
             const ordersTimeChartInstance = useRef(null);
             const ordersArticlesChartRef = useRef(null);
             const ordersArticlesChartInstance = useRef(null);
-            
+            const top10TimelineChartRef = useRef(null); // ⭐ NUOVO: Grafico timeline top 10
+            const top10TimelineChartInstance = useRef(null);
+
             const stocksChartRef = useRef(null);
             const stocksChartInstance = useRef(null);
             const stocksGiacenzeChartRef = useRef(null);
@@ -6258,7 +6588,7 @@
             const stocksRotazioneChartRef = useRef(null);
             const stocksRotazioneChartInstance = useRef(null);
 
-            // DATI FILTRATI ORDINI
+            // DATI FILTRATI ORDINI (tutti i filtri)
             const filteredOrders = useMemo(() => {
                 return (orders || []).filter(order => {
                     const orderDate = new Date(order.date);
@@ -6273,6 +6603,30 @@
                     return true;
                 });
             }, [orders, orderFilters]);
+
+            // ⭐ ORDINI FILTRATI SOLO PER DATA (per statistiche articoli complete)
+            const ordersForStats = useMemo(() => {
+                if (!useAllOrdersForStats) {
+                    console.log('🔍 Usa filtri completi:', filteredOrders.length, 'ordini');
+                    return filteredOrders; // Usa filtri completi
+                }
+
+                // Ignora filtri stato/importo, applica solo range date
+                const result = (orders || []).filter(order => {
+                    const orderDate = new Date(order.date);
+
+                    if (orderFilters.dateFrom && orderDate < new Date(orderFilters.dateFrom)) return false;
+                    if (orderFilters.dateTo && orderDate > new Date(orderFilters.dateTo)) return false;
+
+                    return true;
+                });
+
+                console.log('🔍 Ordini per statistiche (solo filtro date):', result.length, 'ordini su', (orders || []).length, 'totali');
+                console.log('  - Filtro dateFrom:', orderFilters.dateFrom || 'nessuno');
+                console.log('  - Filtro dateTo:', orderFilters.dateTo || 'nessuno');
+
+                return result;
+            }, [orders, orderFilters, filteredOrders, useAllOrdersForStats]);
 
             // DATI FILTRATI SCORTE
             const filteredStocks = useMemo(() => {
@@ -6366,33 +6720,319 @@
                 return { total, count, completed, inProgress, notStarted, avgPricePerUnit, totalQuantity, totalCosts, result };
             }, [filteredOrders, filteredExpenses]);
 
-            // ARTICOLI PIÙ RICHIESTI (RAGGRUPPATI PER ARTICOLO)
+            // ARTICOLI PIÙ RICHIESTI (RAGGRUPPATI PER ARTICOLO) - CON AGGREGAZIONE DETTAGLIATA
             const articoliPiuRichiesti = useMemo(() => {
                 const articoliMap = {};
 
-                filteredOrders.forEach(order => {
-                    const articleKey = order.article;
+                // ⭐ USA ordersForStats invece di filteredOrders per includere TUTTI gli articoli
+                ordersForStats.forEach(order => {
+                    // ⚠️ VALIDAZIONE: Salta ordini senza articolo definito
+                    if (!order.article || order.article.trim() === '') {
+                        console.warn('⚠️ Ordine senza articolo:', order.id, order);
+                        return;
+                    }
+
+                    // Normalizza la chiave (trim per evitare duplicati con spazi)
+                    // IMPORTANTE: Usa il nome ESATTO dell'articolo per non perdere varianti
+                    const articleKey = order.article.trim();
 
                     if (!articoliMap[articleKey]) {
                         articoliMap[articleKey] = {
                             code: articleKey,
-                            name: order.articleName || articleKey,
-                            article: order.articleName || articleKey,
+                            name: order.articleName ? order.articleName.trim() : articleKey,
+                            article: order.articleName ? order.articleName.trim() : articleKey,
                             customer: order.customerName || order.customer,
                             quantitaTotale: 0,
                             fatturatoTotale: 0,
-                            numeroOrdini: 0
+                            numeroOrdini: 0,
+                            ordiniDettaglio: [] // ⭐ NUOVO: Salva dettagli ordini
                         };
                     }
 
-                    articoliMap[articleKey].quantitaTotale += order.quantity;
-                    articoliMap[articleKey].fatturatoTotale += (order.quantity * order.salePrice);
+                    articoliMap[articleKey].quantitaTotale += (order.quantity || 0);
+                    articoliMap[articleKey].fatturatoTotale += ((order.quantity || 0) * (order.salePrice || 0));
                     articoliMap[articleKey].numeroOrdini += 1;
+                    articoliMap[articleKey].ordiniDettaglio.push({
+                        id: order.id,
+                        date: order.date,
+                        customer: order.customerName || order.customer,
+                        quantity: order.quantity,
+                        price: order.salePrice
+                    });
                 });
 
-                return Object.values(articoliMap)
-                    .sort((a, b) => b.quantitaTotale - a.quantitaTotale); // Ordina per quantità richiesta (decrescente)
-            }, [filteredOrders]);
+                const result = Object.values(articoliMap)
+                    .filter(a => a.quantitaTotale > 0)
+                    .sort((a, b) => b.quantitaTotale - a.quantitaTotale);
+
+                // 🔍 DEBUG: Log dettagliato
+                console.log(`📊 Statistiche: ${ordersForStats.length} ordini → ${result.length} articoli unici`);
+
+                // 🐰 DEBUG CONIGLI: Cerca tutti gli articoli con "conig" nel nome (case insensitive, cerca sia coniglio che coniglietto)
+                const conigli = result.filter(a => {
+                    const nomeArticolo = (a.article || '').toLowerCase();
+                    const nomeNormalizzato = (a.name || '').toLowerCase();
+                    return nomeArticolo.includes('conig') || nomeNormalizzato.includes('conig');
+                });
+
+                if (conigli.length > 0) {
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log(`🐰 TROVATI ${conigli.length} ARTICOLI CON "CONIG":`);
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    conigli.forEach(c => {
+                        console.log(`- ${c.article} (${c.quantitaTotale} pz, ${c.numeroOrdini} ordini)`);
+                    });
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                } else {
+                    console.warn('⚠️ NESSUN ARTICOLO CON "CONIG" TROVATO NEL RISULTATO!');
+                    console.warn('   Controllo ordini originali...');
+
+                    // Cerca nei dati RAW - controlla sia article che articleName
+                    const ordiniConConigli = ordersForStats.filter(o => {
+                        const article = (o.article || '').toLowerCase();
+                        const articleName = (o.articleName || '').toLowerCase();
+                        return article.includes('conig') || articleName.includes('conig');
+                    });
+
+                    if (ordiniConConigli.length > 0) {
+                        console.warn(`   ✓ Trovati ${ordiniConConigli.length} ordini con "conig" in ordersForStats:`);
+                        ordiniConConigli.forEach(o => {
+                            console.warn(`     - article: "${o.article}", articleName: "${o.articleName}" (qta: ${o.quantity}, data: ${o.date})`);
+                        });
+                    } else {
+                        console.error('   ✗ NESSUN ordine con "conig" in ordersForStats!');
+                        console.error('   → Verificare:');
+                        console.error('      1. Filtri data (dateFrom/dateTo)');
+                        console.error('      2. Toggle "Includi TUTTI gli articoli" deve essere ON');
+                        console.error('      3. Database Firebase contiene ordini con coniglio');
+                    }
+                }
+
+                if (result.length > 0) {
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('🏆 TOP 10 ARTICOLI PIÙ RICHIESTI:');
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    result.slice(0, 10).forEach((a, i) => {
+                        console.log(`${i+1}. ${a.article}`);
+                        console.log(`   📦 Quantità: ${a.quantitaTotale} pz`);
+                        console.log(`   💰 Fatturato: €${a.fatturatoTotale.toFixed(2)}`);
+                        console.log(`   📋 N° Ordini: ${a.numeroOrdini}`);
+                        console.log('   ───────────────────────────');
+                    });
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log(`📝 TOTALE ARTICOLI: ${result.length}`);
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                }
+
+                return result;
+            }, [ordersForStats]);
+
+            // ⭐ NUOVO: CALCOLO PERIODO PRECEDENTE PER CONFRONTO
+            const previousPeriodOrders = useMemo(() => {
+                if (!orderFilters.comparePrevious || !orderFilters.dateFrom || !orderFilters.dateTo) {
+                    return [];
+                }
+
+                const currentStart = new Date(orderFilters.dateFrom);
+                const currentEnd = new Date(orderFilters.dateTo);
+                const periodDays = Math.ceil((currentEnd - currentStart) / (1000 * 60 * 60 * 24));
+
+                const previousStart = new Date(currentStart);
+                previousStart.setDate(previousStart.getDate() - periodDays - 1);
+                const previousEnd = new Date(currentStart);
+                previousEnd.setDate(previousEnd.getDate() - 1);
+
+                return (orders || []).filter(order => {
+                    const orderDate = new Date(order.date);
+                    return orderDate >= previousStart && orderDate <= previousEnd;
+                });
+            }, [orders, orderFilters]);
+
+            // ⭐ NUOVO: STATISTICHE PERIODO PRECEDENTE
+            const previousStats = useMemo(() => {
+                if (previousPeriodOrders.length === 0) {
+                    return { total: 0, count: 0, totalQuantity: 0 };
+                }
+
+                const total = previousPeriodOrders.reduce((sum, o) => sum + (o.quantity * o.salePrice), 0);
+                const count = previousPeriodOrders.length;
+                const totalQuantity = previousPeriodOrders.reduce((sum, o) => sum + o.quantity, 0);
+
+                return { total, count, totalQuantity };
+            }, [previousPeriodOrders]);
+
+            // ⭐ NUOVO: CALCOLO TREND E VARIAZIONI %
+            const trendsData = useMemo(() => {
+                if (!orderFilters.comparePrevious || previousStats.total === 0) {
+                    return {
+                        revenueChange: 0,
+                        revenueChangePercent: 0,
+                        ordersChange: 0,
+                        ordersChangePercent: 0,
+                        quantityChange: 0,
+                        quantityChangePercent: 0
+                    };
+                }
+
+                const revenueChange = ordersStats.total - previousStats.total;
+                const revenueChangePercent = (revenueChange / previousStats.total) * 100;
+                const ordersChange = ordersStats.count - previousStats.count;
+                const ordersChangePercent = (ordersChange / previousStats.count) * 100;
+                const quantityChange = ordersStats.totalQuantity - previousStats.totalQuantity;
+                const quantityChangePercent = (quantityChange / previousStats.totalQuantity) * 100;
+
+                return {
+                    revenueChange,
+                    revenueChangePercent,
+                    ordersChange,
+                    ordersChangePercent,
+                    quantityChange,
+                    quantityChangePercent
+                };
+            }, [ordersStats, previousStats, orderFilters.comparePrevious]);
+
+            // ⭐ NUOVO: ANDAMENTO TEMPORALE TOP 10 ARTICOLI
+            const top10TimelineData = useMemo(() => {
+                const top10Articles = articoliPiuRichiesti.slice(0, 10);
+                if (top10Articles.length === 0) return { labels: [], datasets: [] };
+
+                // Determina granularità (giornaliera, settimanale, mensile) in base al range
+                const dateFrom = orderFilters.dateFrom ? new Date(orderFilters.dateFrom) : null;
+                const dateTo = orderFilters.dateTo ? new Date(orderFilters.dateTo) : null;
+
+                let periodKey, periodFormat;
+                if (dateFrom && dateTo) {
+                    const daysDiff = Math.ceil((dateTo - dateFrom) / (1000 * 60 * 60 * 24));
+                    if (daysDiff <= 31) {
+                        periodKey = 'day';
+                        periodFormat = { day: '2-digit', month: '2-digit' };
+                    } else if (daysDiff <= 120) {
+                        periodKey = 'week';
+                        periodFormat = { day: '2-digit', month: '2-digit' };
+                    } else {
+                        periodKey = 'month';
+                        periodFormat = { year: 'numeric', month: 'short' };
+                    }
+                } else {
+                    periodKey = 'month';
+                    periodFormat = { year: 'numeric', month: 'short' };
+                }
+
+                // Funzione per ottenere chiave periodo
+                const getPeriodKey = (date) => {
+                    if (periodKey === 'day') {
+                        return date.toLocaleDateString('it-IT', periodFormat);
+                    } else if (periodKey === 'week') {
+                        const weekStart = new Date(date);
+                        weekStart.setDate(date.getDate() - date.getDay());
+                        return weekStart.toLocaleDateString('it-IT', periodFormat);
+                    } else {
+                        return date.toLocaleDateString('it-IT', periodFormat);
+                    }
+                };
+
+                // Aggrega dati per articolo e periodo
+                const timelineMap = {};
+                const periodsSet = new Set();
+
+                // ⭐ USA ordersForStats per includere tutti gli ordini nel timeline
+                ordersForStats.forEach(order => {
+                    const articleKey = order.article;
+                    if (!top10Articles.find(a => a.code === articleKey)) return;
+
+                    const orderDate = new Date(order.date);
+                    const period = getPeriodKey(orderDate);
+                    periodsSet.add(period);
+
+                    if (!timelineMap[articleKey]) {
+                        timelineMap[articleKey] = {};
+                    }
+                    if (!timelineMap[articleKey][period]) {
+                        timelineMap[articleKey][period] = {
+                            quantity: 0,
+                            revenue: 0,
+                            orders: 0
+                        };
+                    }
+
+                    timelineMap[articleKey][period].quantity += order.quantity;
+                    timelineMap[articleKey][period].revenue += order.quantity * order.salePrice;
+                    timelineMap[articleKey][period].orders += 1;
+                });
+
+                // Ordina periodi cronologicamente (corretto per formato italiano)
+                const periods = Array.from(periodsSet).sort((a, b) => {
+                    // Gestisce formati: "DD/MM" o "MMM YYYY" (gen 2025)
+                    const parseDate = (str) => {
+                        if (str.includes('/')) {
+                            // Formato DD/MM o DD/MM/YYYY
+                            const parts = str.split('/');
+                            const day = parseInt(parts[0]);
+                            const month = parseInt(parts[1]) - 1;
+                            const year = parts[2] ? parseInt(parts[2]) : new Date().getFullYear();
+                            return new Date(year, month, day);
+                        } else {
+                            // Formato "gen 2025"
+                            const monthNames = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+                            const parts = str.split(' ');
+                            const monthIndex = monthNames.indexOf(parts[0].toLowerCase());
+                            const year = parseInt(parts[1]);
+                            return new Date(year, monthIndex, 1);
+                        }
+                    };
+
+                    return parseDate(a) - parseDate(b);
+                });
+
+                // Palette colori distinti per 10 articoli
+                const colors = [
+                    '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
+                    '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'
+                ];
+
+                // Crea datasets per Chart.js
+                const datasets = top10Articles.map((article, index) => {
+                    const data = periods.map(period => {
+                        const periodData = timelineMap[article.code]?.[period];
+                        if (!periodData) return 0;
+
+                        if (timelineView === 'quantity') return periodData.quantity;
+                        if (timelineView === 'revenue') return periodData.revenue;
+                        return periodData.orders;
+                    });
+
+                    return {
+                        label: article.article.length > 25 ? article.article.substring(0, 25) + '...' : article.article,
+                        data: data,
+                        borderColor: colors[index],
+                        backgroundColor: colors[index] + '20',
+                        tension: 0.3,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        hidden: visibleArticles[article.code] === false, // Gestisce visibilità
+                        articleCode: article.code // Per identificazione
+                    };
+                });
+
+                return { labels: periods, datasets, top10Articles };
+            }, [articoliPiuRichiesti, ordersForStats, orderFilters, timelineView, visibleArticles]);
+
+            // Funzioni per gestire visibilità articoli
+            const toggleAllArticles = (visible) => {
+                const newVisibility = {};
+                top10TimelineData.top10Articles?.forEach(article => {
+                    newVisibility[article.code] = visible;
+                });
+                setVisibleArticles(newVisibility);
+            };
+
+            const toggleArticle = (articleCode) => {
+                setVisibleArticles(prev => ({
+                    ...prev,
+                    [articleCode]: prev[articleCode] === false ? true : false
+                }));
+            };
 
             // STATISTICHE SCORTE
             const stocksStats = useMemo(() => {
@@ -6417,7 +7057,8 @@
                     dateTo: '',
                     status: 'all',
                     minAmount: '',
-                    maxAmount: ''
+                    maxAmount: '',
+                    comparePrevious: false
                 });
             };
 
@@ -6430,46 +7071,85 @@
                 });
             };
 
-            // EXPORT FUNCTIONS - ORDINI (ARTICOLI RAGGRUPPATI)
+            // ⭐ EXPORT FUNCTIONS - ORDINI (ARTICOLI RAGGRUPPATI) - AGGIORNATO
             const exportOrdersToExcel = () => {
-                const ws = XLSX.utils.json_to_sheet(articoliPiuRichiesti.map(a => ({
+                const top10 = articoliPiuRichiesti.slice(0, 10);
+
+                // Sheet 1: Riepilogo Top 10
+                const ws1 = XLSX.utils.json_to_sheet(top10.map(a => ({
                     'Articolo': a.article,
-                    'Quantità Totale Richiesta': a.quantitaTotale,
+                    'Quantità Totale': a.quantitaTotale,
                     'Fatturato Totale (€)': a.fatturatoTotale.toFixed(2),
                     'Numero Ordini': a.numeroOrdini,
-                    'Media per Ordine': (a.quantitaTotale / a.numeroOrdini).toFixed(2)
+                    'Media per Ordine': (a.quantitaTotale / a.numeroOrdini).toFixed(2),
+                    'Fatturato Medio': (a.fatturatoTotale / a.numeroOrdini).toFixed(2)
                 })));
+
                 const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, 'Articoli Richiesti');
-                XLSX.writeFile(wb, `articoli_richiesti_${new Date().toISOString().split('T')[0]}.xlsx`);
+                XLSX.utils.book_append_sheet(wb, ws1, 'Top 10 Articoli');
+
+                // Sheet 2: Statistiche Generali (se confronto periodo attivo)
+                if (orderFilters.comparePrevious && previousStats.total > 0) {
+                    const statsData = [
+                        { Metrica: 'Fatturato Attuale', Valore: `€${ordersStats.total.toFixed(2)}` },
+                        { Metrica: 'Fatturato Precedente', Valore: `€${previousStats.total.toFixed(2)}` },
+                        { Metrica: 'Variazione %', Valore: `${trendsData.revenueChangePercent.toFixed(2)}%` },
+                        { Metrica: 'Ordini Attuali', Valore: ordersStats.count },
+                        { Metrica: 'Ordini Precedenti', Valore: previousStats.count },
+                        { Metrica: 'Variazione Ordini %', Valore: `${trendsData.ordersChangePercent.toFixed(2)}%` }
+                    ];
+                    const ws2 = XLSX.utils.json_to_sheet(statsData);
+                    XLSX.utils.book_append_sheet(wb, ws2, 'Confronto Periodo');
+                }
+
+                XLSX.writeFile(wb, `statistiche_articoli_${new Date().toISOString().split('T')[0]}.xlsx`);
             };
 
+            // ⭐ EXPORT PDF - AGGIORNATO
             const exportOrdersToPDF = () => {
                 const { jsPDF } = window.jspdf;
                 const doc = new jsPDF();
-                
+
                 doc.setFontSize(18);
-                doc.text('Report Articoli Più Richiesti', 14, 20);
+                doc.text('📊 Report Top 10 Articoli', 14, 20);
                 doc.setFontSize(10);
                 doc.text(`Generato il ${new Date().toLocaleDateString('it-IT')}`, 14, 28);
-                doc.text(`Totale articoli: ${articoliPiuRichiesti.length}`, 14, 34);
 
-                const tableData = articoliPiuRichiesti.map(a => [
-                    a.article.substring(0, 45),
+                let yPos = 34;
+
+                // Statistiche Generali
+                if (orderFilters.comparePrevious && previousStats.total > 0) {
+                    doc.setFontSize(12);
+                    doc.text('Confronto Periodo:', 14, yPos);
+                    yPos += 6;
+                    doc.setFontSize(9);
+                    doc.text(`Fatturato: €${ordersStats.total.toFixed(2)} vs €${previousStats.total.toFixed(2)} (${trendsData.revenueChangePercent > 0 ? '+' : ''}${trendsData.revenueChangePercent.toFixed(1)}%)`, 14, yPos);
+                    yPos += 5;
+                    doc.text(`Ordini: ${ordersStats.count} vs ${previousStats.count} (${trendsData.ordersChangePercent > 0 ? '+' : ''}${trendsData.ordersChangePercent.toFixed(1)}%)`, 14, yPos);
+                    yPos += 8;
+                } else {
+                    doc.text(`Fatturato Totale: €${ordersStats.total.toFixed(2)} • Ordini: ${ordersStats.count}`, 14, yPos);
+                    yPos += 8;
+                }
+
+                const top10 = articoliPiuRichiesti.slice(0, 10);
+                const tableData = top10.map(a => [
+                    a.article.substring(0, 40),
                     a.quantitaTotale,
                     `€${a.fatturatoTotale.toFixed(2)}`,
-                    a.numeroOrdini
+                    a.numeroOrdini,
+                    `€${(a.fatturatoTotale / a.numeroOrdini).toFixed(2)}`
                 ]);
 
                 doc.autoTable({
-                    head: [['Articolo', 'Qta Tot.', 'Fatturato', 'N° Ordini']],
+                    head: [['Articolo', 'Qta', 'Fatt. Tot.', 'Ord.', 'Fatt. Medio']],
                     body: tableData,
-                    startY: 40,
+                    startY: yPos,
                     styles: { fontSize: 8 },
                     headStyles: { fillColor: [59, 130, 246] }
                 });
 
-                doc.save(`articoli_richiesti_${new Date().toISOString().split('T')[0]}.pdf`);
+                doc.save(`report_top10_${new Date().toISOString().split('T')[0]}.pdf`);
             };
 
             // EXPORT FUNCTIONS - GIACENZE
@@ -6966,10 +7646,142 @@
                 };
             }, [activeSection, codiciPiuUsati]);
 
+            // ⭐ NUOVO: GRAFICO TIMELINE TOP 10 ARTICOLI
+            useEffect(() => {
+                if (activeSection === 'orders' && top10TimelineChartRef.current && top10TimelineData.datasets.length > 0) {
+                    if (top10TimelineChartInstance.current) {
+                        top10TimelineChartInstance.current.destroy();
+                    }
+
+                    const ctx = top10TimelineChartRef.current.getContext('2d');
+                    top10TimelineChartInstance.current = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: top10TimelineData.labels,
+                            datasets: top10TimelineData.datasets
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false
+                            },
+                            plugins: {
+                                legend: {
+                                    position: 'left',
+                                    align: 'start',
+                                    labels: {
+                                        boxWidth: 12,
+                                        font: { size: 10 },
+                                        color: chartTextColor,
+                                        padding: 10,
+                                        usePointStyle: true
+                                    },
+                                    onClick: function(e, legendItem, legend) {
+                                        const index = legendItem.datasetIndex;
+                                        const chart = legend.chart;
+                                        const meta = chart.getDatasetMeta(index);
+                                        meta.hidden = !meta.hidden;
+                                        chart.update();
+                                    }
+                                },
+                                title: {
+                                    display: true,
+                                    text: `Andamento Top 10 Articoli - ${
+                                        timelineView === 'quantity' ? 'Quantità' :
+                                        timelineView === 'revenue' ? 'Fatturato (€)' :
+                                        'Numero Ordini'
+                                    }`,
+                                    font: { size: 14, weight: 'bold' },
+                                    color: chartTextColor,
+                                    padding: { bottom: 10 }
+                                },
+                                tooltip: {
+                                    backgroundColor: isDark ? '#1e293b' : '#fff',
+                                    titleColor: isDark ? '#f1f5f9' : '#0f172a',
+                                    bodyColor: isDark ? '#f1f5f9' : '#0f172a',
+                                    borderColor: isDark ? '#475569' : '#e2e8f0',
+                                    borderWidth: 1,
+                                    padding: 10,
+                                    displayColors: true,
+                                    callbacks: {
+                                        label: function(context) {
+                                            let label = context.dataset.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (timelineView === 'revenue') {
+                                                label += '€' + context.parsed.y.toFixed(2);
+                                            } else {
+                                                label += context.parsed.y;
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        font: { size: 10 },
+                                        color: chartTextColor,
+                                        callback: function(value) {
+                                            if (timelineView === 'revenue') {
+                                                return '€' + value.toFixed(0);
+                                            }
+                                            return value;
+                                        }
+                                    },
+                                    grid: {
+                                        color: chartGridColor
+                                    }
+                                },
+                                x: {
+                                    ticks: {
+                                        font: { size: 9 },
+                                        color: chartTextColor,
+                                        maxRotation: 45,
+                                        minRotation: 0
+                                    },
+                                    grid: {
+                                        color: chartGridColor
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                return () => {
+                    if (top10TimelineChartInstance.current) {
+                        top10TimelineChartInstance.current.destroy();
+                    }
+                };
+            }, [activeSection, top10TimelineData, timelineView, isDark, chartTextColor, chartGridColor]);
+
+            // ⭐ LOADING SPINNER
+            if (isLoading) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen">
+                        <div className="text-center">
+                            <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div>
+                            <p className="text-slate-600 text-lg font-medium">Caricamento dati da Firebase...</p>
+                            <p className="text-slate-400 text-sm mt-2">
+                                {ordersLoading && '📦 Caricamento ordini... '}
+                                {expensesLoading && '💸 Caricamento spese... '}
+                                {stocksLoading && '📊 Caricamento scorte... '}
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
             return (
                 <div className="space-y-3">
                     <h2 className="text-xl font-bold text-slate-900">📊 Statistiche</h2>
-                    
+
                     {/* TABS */}
                     <div className="flex gap-2 bg-white p-2 rounded-lg shadow-sm">
                         <button
@@ -6992,64 +7804,167 @@
 
                     {/* STATISTICHE ORDINI */}
                     {activeSection === 'orders' && (
-                        <div className="space-y-2">
-                            {/* FILTRI ULTRA COMPATTI */}
-                            <div className="bg-white rounded-lg shadow-sm p-2">
-                                <div className="flex items-center justify-between mb-1">
-                                    <h3 className="text-xs font-bold text-slate-900">🔍 Filtri</h3>
-                                    <button onClick={resetOrderFilters} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
-                                        Reset
-                                    </button>
+                        <div className="space-y-3">
+                            {/* ⭐ FILTRI AVANZATI COLLAPSIBILI */}
+                            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+                                <div
+                                    className="flex items-center justify-between p-3 cursor-pointer hover:bg-slate-50 transition-colors"
+                                    onClick={() => setFiltersCollapsed(!filtersCollapsed)}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-sm font-bold text-slate-900">🔍 Filtri Avanzati</h3>
+                                        {(orderFilters.dateFrom || orderFilters.dateTo || orderFilters.status !== 'all') && (
+                                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
+                                                Attivi
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); resetOrderFilters(); }}
+                                            className="text-xs text-blue-600 hover:text-blue-700 font-medium px-2 py-1 hover:bg-blue-50 rounded"
+                                        >
+                                            Reset
+                                        </button>
+                                        <span className="text-slate-400">
+                                            {filtersCollapsed ? '▼' : '▲'}
+                                        </span>
+                                    </div>
                                 </div>
-                                <div className="mb-2">
-                                    <label className="block text-xs font-medium text-slate-700 mb-1">📅 Preset Veloci</label>
-                                    <DatePresets onSelectPreset={(dates) => {
-                                        setOrderFilters({...orderFilters, dateFrom: dates.from, dateTo: dates.to});
-                                    }} />
-                                </div>
-                                <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5">
-                                    <input type="date" value={orderFilters.dateFrom} onChange={(e) => setOrderFilters({...orderFilters, dateFrom: e.target.value})}
-                                        className="compact-input w-full border border-slate-300 rounded text-xs" placeholder="Da" />
-                                    <input type="date" value={orderFilters.dateTo} onChange={(e) => setOrderFilters({...orderFilters, dateTo: e.target.value})}
-                                        className="compact-input w-full border border-slate-300 rounded text-xs" placeholder="A" />
-                                    <select value={orderFilters.status} onChange={(e) => setOrderFilters({...orderFilters, status: e.target.value})}
-                                        className="compact-select w-full border border-slate-300 rounded text-xs">
-                                        <option value="all">Tutti Stati</option>
-                                        {Object.values(OrderStatus).map(status => (
-                                            <option key={status} value={status}>{status}</option>
-                                        ))}
-                                    </select>
-                                    <input type="number" step="0.01" value={orderFilters.minAmount} onChange={(e) => setOrderFilters({...orderFilters, minAmount: e.target.value})}
-                                        className="compact-input w-full border border-slate-300 rounded text-xs" placeholder="Min €" />
-                                    <input type="number" step="0.01" value={orderFilters.maxAmount} onChange={(e) => setOrderFilters({...orderFilters, maxAmount: e.target.value})}
-                                        className="compact-input w-full border border-slate-300 rounded text-xs" placeholder="Max €" />
-                                </div>
+
+                                {!filtersCollapsed && (
+                                    <div className="p-3 border-t border-slate-200 space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-700 mb-1.5">📅 Preset Veloci</label>
+                                            <DatePresets onSelectPreset={(dates) => {
+                                                setOrderFilters({...orderFilters, dateFrom: dates.from, dateTo: dates.to});
+                                            }} />
+                                        </div>
+
+                                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-700 mb-1">Da</label>
+                                                <input
+                                                    type="date"
+                                                    value={orderFilters.dateFrom}
+                                                    onChange={(e) => setOrderFilters({...orderFilters, dateFrom: e.target.value})}
+                                                    className="compact-input w-full border border-slate-300 rounded text-xs"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-700 mb-1">A</label>
+                                                <input
+                                                    type="date"
+                                                    value={orderFilters.dateTo}
+                                                    onChange={(e) => setOrderFilters({...orderFilters, dateTo: e.target.value})}
+                                                    className="compact-input w-full border border-slate-300 rounded text-xs"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-700 mb-1">Stato</label>
+                                                <select
+                                                    value={orderFilters.status}
+                                                    onChange={(e) => setOrderFilters({...orderFilters, status: e.target.value})}
+                                                    className="compact-select w-full border border-slate-300 rounded text-xs"
+                                                >
+                                                    <option value="all">Tutti Stati</option>
+                                                    {Object.values(OrderStatus).map(status => (
+                                                        <option key={status} value={status}>{status}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-700 mb-1">Min €</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={orderFilters.minAmount}
+                                                    onChange={(e) => setOrderFilters({...orderFilters, minAmount: e.target.value})}
+                                                    className="compact-input w-full border border-slate-300 rounded text-xs"
+                                                    placeholder="0.00"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-700 mb-1">Max €</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={orderFilters.maxAmount}
+                                                    onChange={(e) => setOrderFilters({...orderFilters, maxAmount: e.target.value})}
+                                                    className="compact-input w-full border border-slate-300 rounded text-xs"
+                                                    placeholder="999999"
+                                                />
+                                            </div>
+                                            <div className="flex items-end">
+                                                <label className="flex items-center gap-2 cursor-pointer px-3 py-2 bg-slate-50 rounded border border-slate-300 hover:bg-slate-100 transition-colors w-full">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={orderFilters.comparePrevious}
+                                                        onChange={(e) => setOrderFilters({...orderFilters, comparePrevious: e.target.checked})}
+                                                        className="w-4 h-4"
+                                                    />
+                                                    <span className="text-xs font-medium text-slate-700">Confronta</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
-                            {/* LAYOUT OTTIMIZZATO PER IPAD */}
-
-                            {/* CARDS STATISTICHE COMPATTE IN GRIGLIA */}
+                            {/* ⭐ KPI CARDS CON TREND E CONFRONTO */}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                                <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-3 shadow-sm text-white">
-                                    <div className="text-xs opacity-90 mb-1">💰 Fatturato</div>
-                                    <div className="text-lg font-bold">€{ordersStats.total.toFixed(2)}</div>
-                                    <div className="text-xs opacity-75 mt-1">{ordersStats.totalQuantity} pz</div>
+                                {/* Fatturato */}
+                                <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-3 shadow-md text-white">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <div className="text-xs opacity-90">💰 Fatturato</div>
+                                        {orderFilters.comparePrevious && trendsData.revenueChangePercent !== 0 && (
+                                            <div className="flex items-center gap-1 text-xs font-bold">
+                                                {trendsData.revenueChangePercent > 0 ? '↗' : '↘'}
+                                                <span>{Math.abs(trendsData.revenueChangePercent).toFixed(1)}%</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="text-xl font-bold">€{ordersStats.total.toFixed(2)}</div>
+                                    <div className="text-xs opacity-75 mt-1">{ordersStats.totalQuantity} pz totali</div>
+                                    {orderFilters.comparePrevious && previousStats.total > 0 && (
+                                        <div className="text-xs opacity-80 mt-1 border-t border-white/20 pt-1">
+                                            vs €{previousStats.total.toFixed(2)}
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-lg p-3 shadow-sm text-white">
+
+                                {/* Costi */}
+                                <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-lg p-3 shadow-md text-white">
                                     <div className="text-xs opacity-90 mb-1">💸 Costi</div>
-                                    <div className="text-lg font-bold">€{ordersStats.totalCosts.toFixed(2)}</div>
+                                    <div className="text-xl font-bold">€{ordersStats.totalCosts.toFixed(2)}</div>
                                     <div className="text-xs opacity-75 mt-1">{filteredExpenses.length} spese</div>
                                 </div>
-                                <div className={`bg-gradient-to-br rounded-lg p-3 shadow-sm text-white ${
+
+                                {/* Risultato */}
+                                <div className={`bg-gradient-to-br rounded-lg p-3 shadow-md text-white ${
                                     ordersStats.result >= 0 ? 'from-green-500 to-green-600' : 'from-orange-500 to-orange-600'
                                 }`}>
-                                    <div className="text-xs opacity-90 mb-1">{ordersStats.result >= 0 ? '✅' : '⚠️'} Risultato</div>
-                                    <div className="text-lg font-bold">€{ordersStats.result.toFixed(2)}</div>
-                                    <div className="text-xs opacity-75 mt-1">€{ordersStats.avgPricePerUnit.toFixed(2)}/pz</div>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <div className="text-xs opacity-90">{ordersStats.result >= 0 ? '✅' : '⚠️'} Risultato</div>
+                                    </div>
+                                    <div className="text-xl font-bold">€{ordersStats.result.toFixed(2)}</div>
+                                    <div className="text-xs opacity-75 mt-1">€{ordersStats.avgPricePerUnit.toFixed(2)}/pz medio</div>
                                 </div>
-                                <div className="bg-white rounded-lg p-3 shadow-sm">
-                                    <div className="text-xs font-semibold text-slate-700 mb-1">📋 Ordini</div>
-                                    <div className="grid grid-cols-4 gap-1">
+
+                                {/* Ordini */}
+                                <div className="bg-white rounded-lg p-3 shadow-md">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <div className="text-xs font-semibold text-slate-700">📋 Ordini</div>
+                                        {orderFilters.comparePrevious && trendsData.ordersChangePercent !== 0 && (
+                                            <div className={`flex items-center gap-1 text-xs font-bold ${
+                                                trendsData.ordersChangePercent > 0 ? 'text-green-600' : 'text-red-600'
+                                            }`}>
+                                                {trendsData.ordersChangePercent > 0 ? '↗' : '↘'}
+                                                <span>{Math.abs(trendsData.ordersChangePercent).toFixed(1)}%</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-1 mb-1">
                                         <div className="text-center">
                                             <div className="text-xs text-slate-600">Tot</div>
                                             <div className="text-base font-bold text-slate-900">{ordersStats.count}</div>
@@ -7067,8 +7982,137 @@
                                             <div className="text-base font-bold text-red-600">{ordersStats.notStarted}</div>
                                         </div>
                                     </div>
+                                    {orderFilters.comparePrevious && previousStats.count > 0 && (
+                                        <div className="text-xs text-slate-500 border-t pt-1 text-center">
+                                            vs {previousStats.count} periodo prec.
+                                        </div>
+                                    )}
                                 </div>
                             </div>
+
+                            {/* ⭐ BANNER CONTROLLO FILTRI STATISTICHE */}
+                            <div className="bg-gradient-to-r from-blue-50 to-cyan-50 border border-blue-200 rounded-lg p-3">
+                                <div className="flex items-center justify-between gap-3 flex-wrap">
+                                    <div className="flex items-center gap-2">
+                                        <div className="text-2xl">📊</div>
+                                        <div>
+                                            <div className="text-sm font-bold text-slate-900">
+                                                Modalità Statistiche Articoli
+                                            </div>
+                                            <div className="text-xs text-slate-600">
+                                                {useAllOrdersForStats ? (
+                                                    <>
+                                                        <span className="font-semibold text-green-700">✓ Inclusi TUTTI gli articoli</span>
+                                                        <span className="text-slate-500 ml-1">(ignora filtri stato/importo)</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span className="font-semibold text-orange-700">⚠ Solo articoli filtrati</span>
+                                                        <span className="text-slate-500 ml-1">(applica filtri stato/importo)</span>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-slate-700">
+                                                {useAllOrdersForStats ? 'Applica filtri completi' : 'Mostra tutti'}
+                                            </span>
+                                            <button
+                                                onClick={() => setUseAllOrdersForStats(!useAllOrdersForStats)}
+                                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                                    useAllOrdersForStats ? 'bg-green-600' : 'bg-slate-400'
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                                        useAllOrdersForStats ? 'translate-x-6' : 'translate-x-1'
+                                                    }`}
+                                                />
+                                            </button>
+                                        </div>
+
+                                        {!useAllOrdersForStats && (orderFilters.status !== 'all' || orderFilters.minAmount || orderFilters.maxAmount) && (
+                                            <div className="px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded font-medium">
+                                                Filtri attivi: potrebbero mancare articoli
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* ⭐ NUOVO: GRAFICO ANDAMENTO TEMPORALE TOP 10 ARTICOLI */}
+                            {filteredOrders.length > 0 && top10TimelineData.datasets.length > 0 && (
+                                <div className="bg-white rounded-lg shadow-md p-4">
+                                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                                        <h3 className="text-base font-bold text-slate-900">
+                                            📈 Andamento Top 10 Articoli nel Tempo
+                                        </h3>
+                                        <div className="flex gap-2 flex-wrap">
+                                            {/* Pulsanti Visualizzazione */}
+                                            <div className="flex gap-1">
+                                                <button
+                                                    onClick={() => setTimelineView('quantity')}
+                                                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                                        timelineView === 'quantity'
+                                                            ? 'bg-blue-600 text-white shadow-sm'
+                                                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                                    }`}
+                                                >
+                                                    Quantità
+                                                </button>
+                                                <button
+                                                    onClick={() => setTimelineView('revenue')}
+                                                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                                        timelineView === 'revenue'
+                                                            ? 'bg-green-600 text-white shadow-sm'
+                                                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                                    }`}
+                                                >
+                                                    Fatturato €
+                                                </button>
+                                                <button
+                                                    onClick={() => setTimelineView('orders')}
+                                                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                                        timelineView === 'orders'
+                                                            ? 'bg-purple-600 text-white shadow-sm'
+                                                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                                    }`}
+                                                >
+                                                    N° Ordini
+                                                </button>
+                                            </div>
+
+                                            {/* Pulsanti Selezione */}
+                                            <div className="flex gap-1 border-l pl-2">
+                                                <button
+                                                    onClick={() => toggleAllArticles(true)}
+                                                    className="px-3 py-1 text-xs font-medium rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors"
+                                                    title="Mostra tutti gli articoli"
+                                                >
+                                                    ✓ Tutti
+                                                </button>
+                                                <button
+                                                    onClick={() => toggleAllArticles(false)}
+                                                    className="px-3 py-1 text-xs font-medium rounded bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+                                                    title="Nascondi tutti gli articoli"
+                                                >
+                                                    ✕ Nessuno
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style={{position: 'relative', height: '420px'}}>
+                                        <canvas ref={top10TimelineChartRef}></canvas>
+                                    </div>
+                                    <div className="mt-3 text-xs text-slate-500 border-t pt-2 flex items-center justify-between">
+                                        <span>💡 Click sulla leggenda per mostrare/nascondere singoli articoli</span>
+                                        <span className="text-slate-400">Periodi ordinati cronologicamente</span>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* GRAFICI MINI IN RIGA */}
                             {filteredOrders.length > 0 && (
@@ -7584,10 +8628,22 @@
             const { isDark, toggleDarkMode } = useDarkMode();
             const { trash } = useTrash();
             const { currentUser, logout } = useAuth();
+            const { report, checkIntegrity } = useDataIntegrity();
 
             useEffect(() => {
                 console.log('Active Tab:', activeTab);
             }, [activeTab]);
+
+            // Controllo integrità dati all'avvio
+            useEffect(() => {
+                if (currentUser) {
+                    // Attendi 2 secondi per permettere a Firebase di caricare i dati
+                    const timer = setTimeout(() => {
+                        checkIntegrity();
+                    }, 2000);
+                    return () => clearTimeout(timer);
+                }
+            }, [currentUser, checkIntegrity]);
 
             // Shortcut Ctrl+K o Cmd+K per ricerca globale
             useEffect(() => {
@@ -7614,7 +8670,8 @@
                 customers: { label: 'Clienti', color: 'cyan' },
                 articles: { label: 'Articoli', color: 'indigo' },
                 statistics: { label: 'Statistiche', color: 'yellow' },
-                colori: { label: 'Colori', color: 'pink' }
+                colori: { label: 'Colori', color: 'pink' },
+                dataIntegrity: { label: 'Sync', color: 'red' }
             };
 
             return (
@@ -7628,7 +8685,7 @@
                                         <button
                                             key={key}
                                             onClick={() => setActiveTab(key)}
-                                            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                                            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap relative ${
                                                 activeTab === key
                                                     ? (key === 'dashboard' ? 'bg-slate-700 text-white shadow-sm' :
                                                        key === 'orders' ? 'bg-blue-600 text-white shadow-sm' :
@@ -7637,11 +8694,17 @@
                                                        key === 'customers' ? 'bg-cyan-600 text-white shadow-sm' :
                                                        key === 'articles' ? 'bg-indigo-600 text-white shadow-sm' :
                                                        key === 'statistics' ? 'bg-yellow-600 text-white shadow-sm' :
-                                                       'bg-pink-600 text-white shadow-sm')
+                                                       key === 'colori' ? 'bg-pink-600 text-white shadow-sm' :
+                                                       'bg-red-600 text-white shadow-sm')
                                                     : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
                                             }`}
                                         >
                                             {tab.label}
+                                            {key === 'dataIntegrity' && report && report.overall === 'ALERT' && (
+                                                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold animate-pulse">
+                                                    !
+                                                </span>
+                                            )}
                                         </button>
                                     ))}
                                 </div>
@@ -7682,6 +8745,7 @@
                         {activeTab === 'articles' && <ArticlesArchiveView />}
                         {activeTab === 'statistics' && <StatisticsView />}
                         {activeTab === 'colori' && <ColoriView />}
+                        {activeTab === 'dataIntegrity' && <DataIntegrityDashboard />}
                     </main>
 
                     {showBackup && <BackupModal onClose={() => setShowBackup(false)} onDataRestored={() => window.location.reload()} />}
