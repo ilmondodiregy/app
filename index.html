@@ -3335,7 +3335,7 @@
                 const expenseData = {
                     id: initialExpense?.id || `expense-${Date.now()}-${Math.random()}`,
                     date,
-                    description,
+                    description: description.toUpperCase(),
                     quantity: Number(quantity),
                     price: Number(price)
                 };
@@ -3351,7 +3351,7 @@
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Descrizione</label>
-                        <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Es: Materiali elettrici" required className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 compact-input" />
+                        <input type="text" value={description} onChange={(e) => setDescription(e.target.value.toUpperCase())} placeholder="MATERIALI ELETTRICI" required className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 compact-input uppercase" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
@@ -3431,11 +3431,11 @@
                     id: initialMovement?.id || `movement-${Date.now()}-${Math.random()}`,
                     date,
                     code: code.toUpperCase(),
-                    description,
+                    description: description.toUpperCase(),
                     type,
                     quantity: Number(quantity),
                     price: Number(price),
-                    notes
+                    notes: notes.toUpperCase()
                 };
 
                 onSave(movementData);
@@ -3474,7 +3474,7 @@
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Descrizione Articolo</label>
-                        <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Es: Cavo elettrico 2x1.5mm" required className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 compact-input" />
+                        <input type="text" value={description} onChange={(e) => setDescription(e.target.value.toUpperCase())} placeholder="CAVO ELETTRICO 2X1.5MM" required className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 compact-input uppercase" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
@@ -3488,7 +3488,7 @@
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Note (opzionali)</label>
-                        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Fornitore, DDT, ecc..." rows="2" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 compact-input resize-none" />
+                        <textarea value={notes} onChange={(e) => setNotes(e.target.value.toUpperCase())} placeholder="FORNITORE, DDT, ECC..." rows="2" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 compact-input resize-none uppercase" />
                     </div>
                     <div className="bg-slate-50 p-3 rounded-lg">
                         <span className="text-sm text-slate-600">Totale Movimento: </span>
@@ -5762,7 +5762,14 @@
 
             // Apri form modifica
             const handleEditArticle = (article) => {
-                setFormData({ ...article });
+                setFormData({
+                    ...article,
+                    code: article.code?.toUpperCase() || '',
+                    name: article.name?.toUpperCase() || '',
+                    description: article.description?.toUpperCase() || '',
+                    category: article.category?.toUpperCase() || '',
+                    notes: article.notes?.toUpperCase() || ''
+                });
                 setEditingArticle(article);
                 setShowForm(true);
             };
@@ -5786,13 +5793,13 @@
                 }
 
                 const articleData = {
-                    code: formData.code,
+                    code: formData.code.toUpperCase(),
                     costPrice: parseFloat(formData.costPrice),
                     salePrice: parseFloat(formData.salePrice),
-                    name: formData.name.trim(),
-                    description: formData.description.trim(),
-                    category: formData.category.trim(),
-                    notes: formData.notes.trim(),
+                    name: formData.name.trim().toUpperCase(),
+                    description: formData.description.trim().toUpperCase(),
+                    category: formData.category.trim().toUpperCase(),
+                    notes: formData.notes.trim().toUpperCase(),
                     isActive: editingArticle?.isActive !== undefined ? editingArticle.isActive : true
                 };
 
@@ -6013,9 +6020,9 @@
                                     <input
                                         type="text"
                                         value={formData.name}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500"
-                                        placeholder="Es: Tubi in PVC"
+                                        onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500 uppercase"
+                                        placeholder="TUBI IN PVC"
                                     />
                                 </div>
 
@@ -6025,9 +6032,9 @@
                                     <input
                                         type="text"
                                         value={formData.description}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500"
-                                        placeholder="Descrizione dettagliata..."
+                                        onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500 uppercase"
+                                        placeholder="DESCRIZIONE DETTAGLIATA..."
                                     />
                                 </div>
 
@@ -6037,9 +6044,9 @@
                                     <input
                                         type="text"
                                         value={formData.category}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500"
-                                        placeholder="Es: Idraulica, Elettronica..."
+                                        onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500 uppercase"
+                                        placeholder="IDRAULICA, ELETTRONICA..."
                                     />
                                 </div>
 
@@ -6090,10 +6097,10 @@
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Note</label>
                                     <textarea
                                         value={formData.notes}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500"
+                                        onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-indigo-500 uppercase"
                                         rows="3"
-                                        placeholder="Note aggiuntive..."
+                                        placeholder="NOTE AGGIUNTIVE..."
                                     />
                                 </div>
 
@@ -6199,7 +6206,15 @@
 
             // Apri form modifica
             const handleEditCustomer = (customer) => {
-                setFormData({ ...customer });
+                setFormData({
+                    ...customer,
+                    code: customer.code?.toUpperCase() || '',
+                    name: customer.name?.toUpperCase() || '',
+                    address: customer.address?.toUpperCase() || '',
+                    fiscalCode: customer.fiscalCode?.toUpperCase() || '',
+                    vatNumber: customer.vatNumber?.toUpperCase() || '',
+                    notes: customer.notes?.toUpperCase() || ''
+                });
                 setEditingCustomer(customer);
                 setShowForm(true);
             };
@@ -6213,14 +6228,14 @@
                 }
 
                 const customerData = {
-                    code: formData.code,
-                    name: formData.name.trim(),
+                    code: formData.code.toUpperCase(),
+                    name: formData.name.trim().toUpperCase(),
                     phone: formData.phone.trim(),
-                    email: formData.email.trim(),
-                    address: formData.address.trim(),
-                    fiscalCode: formData.fiscalCode.trim(),
-                    vatNumber: formData.vatNumber.trim(),
-                    notes: formData.notes.trim(),
+                    email: formData.email.trim().toLowerCase(),
+                    address: formData.address.trim().toUpperCase(),
+                    fiscalCode: formData.fiscalCode.trim().toUpperCase(),
+                    vatNumber: formData.vatNumber.trim().toUpperCase(),
+                    notes: formData.notes.trim().toUpperCase(),
                     isActive: editingCustomer?.isActive !== undefined ? editingCustomer.isActive : true
                 };
 
@@ -6424,9 +6439,9 @@
                                     <input
                                         type="text"
                                         value={formData.name}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500"
-                                        placeholder="Es: Mario Rossi"
+                                        onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500 uppercase"
+                                        placeholder="MARIO ROSSI"
                                     />
                                 </div>
 
@@ -6460,9 +6475,9 @@
                                     <input
                                         type="text"
                                         value={formData.address}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, address: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500"
-                                        placeholder="Via, Città, CAP"
+                                        onChange={(e) => setFormData(prev => ({ ...prev, address: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500 uppercase"
+                                        placeholder="VIA, CITTÀ, CAP"
                                     />
                                 </div>
 
@@ -6484,8 +6499,8 @@
                                         <input
                                             type="text"
                                             value={formData.vatNumber}
-                                            onChange={(e) => setFormData(prev => ({ ...prev, vatNumber: e.target.value }))}
-                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500"
+                                            onChange={(e) => setFormData(prev => ({ ...prev, vatNumber: e.target.value.toUpperCase() }))}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500 uppercase"
                                             placeholder="12345678901"
                                             maxLength="11"
                                         />
@@ -6497,10 +6512,10 @@
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Note</label>
                                     <textarea
                                         value={formData.notes}
-                                        onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500"
+                                        onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value.toUpperCase() }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-cyan-500 uppercase"
                                         rows="3"
-                                        placeholder="Note aggiuntive..."
+                                        placeholder="NOTE AGGIUNTIVE..."
                                     />
                                 </div>
 
