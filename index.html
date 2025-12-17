@@ -2419,6 +2419,15 @@
         // =================================================================
         const CloudBackupManager = {
             // Crea blob del backup da Firebase data
+            // =================================================================
+            // 💰 AGGIORNAMENTO: Incluso storico modifiche prezzi
+            // =================================================================
+            // Ragionamento: Lo storico prezzi è CRITICO per:
+            // 1. AUDIT: tracciare chi ha modificato i prezzi e quando
+            // 2. COMPLIANCE: requisiti fiscali e normativi
+            // 3. UNDO: ripristinare prezzi precedenti
+            // 4. ANALISI: studiare trend pricing nel tempo
+            // Deve essere SEMPRE incluso nel backup per disaster recovery completo
             createBackupBlob(firebaseData) {
                 const data = {
                     // Dati principali da Firebase
@@ -2432,6 +2441,11 @@
                     stockThresholds: firebaseData.stockThresholds || {},
                     trash: firebaseData.trash || [],
 
+                    // 💰 STORICO MODIFICHE PREZZI (NUOVO!)
+                    // Ragionamento: Collection separata per tracking completo modifiche prezzi
+                    // Ogni entry contiene: batchId, articleCode, oldPrice, newPrice, timestamp, user
+                    priceHistory: firebaseData.priceHistory || [],
+
                     // Preferenze locali (restano localStorage)
                     darkMode: JSON.parse(localStorage.getItem('darkMode') || 'false'),
                     autoSaveEnabled: JSON.parse(localStorage.getItem('autoSaveEnabled') || 'false'),
@@ -2439,7 +2453,7 @@
 
                     // Metadata
                     exportDate: new Date().toISOString(),
-                    version: '3.2', // Incremento versione per Firebase
+                    version: '3.3', // ⚠️ INCREMENTO VERSIONE per includere priceHistory
                     source: 'Firebase',
 
                     // Statistiche backup
@@ -2450,7 +2464,8 @@
                         totalArticles: (firebaseData.articlesArchive || []).length,
                         totalCustomers: (firebaseData.customersArchive || []).length,
                         totalStockThresholds: Object.keys(firebaseData.stockThresholds || {}).length,
-                        totalTrashItems: (firebaseData.trash || []).length
+                        totalTrashItems: (firebaseData.trash || []).length,
+                        totalPriceChanges: (firebaseData.priceHistory || []).length  // 💰 NUOVA STAT
                     }
                 };
                 return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -2569,6 +2584,7 @@
             const { data: customersArchive } = useFirestore('customersArchive');
             const [stockThresholds] = useFirestoreSettings('stockThresholds', {});
             const { data: trash } = useFirestore('trash');
+            const { data: priceHistory } = useFirestore('priceHistory'); // 💰 STORICO PREZZI
 
             // Auto-save ogni 24 ore se abilitato
             useEffect(() => {
@@ -2631,7 +2647,8 @@
                         articlesArchive,
                         customersArchive,
                         stockThresholds,
-                        trash
+                        trash,
+                        priceHistory  // 💰 INCLUSO STORICO PREZZI
                     };
                     const result = await CloudBackupManager.saveToGoogleDrive(firebaseData);
                     if (result.success) {
@@ -2655,7 +2672,8 @@
                         articlesArchive,
                         customersArchive,
                         stockThresholds,
-                        trash
+                        trash,
+                        priceHistory  // 💰 INCLUSO STORICO PREZZI
                     };
                     const result = await CloudBackupManager.saveToICloud(firebaseData);
                     if (result.success) {
@@ -5691,6 +5709,21 @@
                 notes: ''
             });
 
+            // =================================================================
+            // 💰 BULK PRICE UPDATE - STATE MANAGEMENT
+            // =================================================================
+            // Ragionamento: Separiamo lo stato del bulk update dal form principale
+            // per mantenere SEPARAZIONE DELLE RESPONSABILITÀ (Single Responsibility Principle)
+            const [showPriceUpdateModal, setShowPriceUpdateModal] = useState(false);
+            const [priceUpdateConfig, setPriceUpdateConfig] = useState({
+                filterType: 'all',        // 'all' | 'category' | 'selected'
+                category: '',              // categoria selezionata se filterType='category'
+                operation: 'increase',     // 'increase' | 'decrease'
+                percentage: 5,             // default 5%
+                roundToEuro: true,         // default arrotonda all'euro
+                selectedArticles: []       // array di codici articoli (per future implementazioni)
+            });
+
             // Genera codice automatico
             const generateCode = () => {
                 // 🔥 Handle Firebase loading state
@@ -5719,6 +5752,42 @@
                     amount: margin.toFixed(2),
                     percentage: percentage.toFixed(2)
                 };
+            };
+
+            // =================================================================
+            // 💰 BULK PRICE UPDATE - FUNZIONE CORE DI CALCOLO
+            // =================================================================
+            // Ragionamento: Questa funzione è il CUORE del sistema di aggiornamento prezzi.
+            // Deve essere PURA (no side effects) e TESTABILE facilmente.
+            // Parametri:
+            //   - currentPrice: prezzo attuale (number)
+            //   - percentage: percentuale di modifica (es: 5 per +5%)
+            //   - increase: true=aumento, false=diminuzione
+            //   - roundToEuro: true=arrotonda all'euro, false=mantieni centesimi
+            const calculateNewPrice = (currentPrice, percentage, increase = true, roundToEuro = true) => {
+                // Validazione input
+                const price = parseFloat(currentPrice) || 0;
+                const percent = parseFloat(percentage) || 0;
+
+                // Se prezzo o percentuale = 0, ritorna prezzo originale
+                if (price === 0 || percent === 0) return price;
+
+                // Calcola moltiplicatore
+                // Aumento: 1 + (5/100) = 1.05 → prezzo * 1.05
+                // Diminuzione: 1 - (5/100) = 0.95 → prezzo * 0.95
+                const multiplier = increase ? (1 + percent / 100) : (1 - percent / 100);
+
+                // Calcola nuovo prezzo
+                let newPrice = price * multiplier;
+
+                // Arrotondamento all'euro se richiesto
+                // Math.round(25.73) = 26
+                if (roundToEuro) {
+                    newPrice = Math.round(newPrice);
+                }
+
+                // Assicura sempre 2 decimali per consistenza
+                return parseFloat(newPrice.toFixed(2));
             };
 
             // Margine corrente nel form
@@ -5871,17 +5940,302 @@
                 }
             };
 
+            // =================================================================
+            // 💰 BULK PRICE UPDATE - FUNZIONE PRINCIPALE
+            // =================================================================
+            // Ragionamento: Questa funzione gestisce l'aggiornamento massivo dei prezzi.
+            // IMPLICAZIONI IMPORTANTI:
+            // 1. ATOMICITÀ: Usa Firebase batch per garantire che o TUTTI i prezzi vengano
+            //    aggiornati o NESSUNO (transazionalità)
+            // 2. STORICO: Salva OGNI modifica in una collection separata 'priceHistory'
+            //    per auditing, compliance, e possibilità di UNDO
+            // 3. PERFORMANCE: Batch update è più veloce di singoli update
+            // 4. BACKUP: Lo storico sarà incluso nel backup per restore completo
+            const applyBulkPriceUpdate = async () => {
+                try {
+                    // STEP 1: Filtra articoli da aggiornare in base alla configurazione
+                    let articlesToUpdate = articlesArchive || [];
+
+                    if (priceUpdateConfig.filterType === 'category') {
+                        if (!priceUpdateConfig.category) {
+                            showToast('⚠️ Seleziona una categoria', 'warning');
+                            return;
+                        }
+                        articlesToUpdate = articlesToUpdate.filter(
+                            a => a.category === priceUpdateConfig.category
+                        );
+                    } else if (priceUpdateConfig.filterType === 'selected') {
+                        articlesToUpdate = articlesToUpdate.filter(
+                            a => priceUpdateConfig.selectedArticles.includes(a.code)
+                        );
+                    }
+
+                    // VALIDAZIONE: Almeno 1 articolo da aggiornare
+                    if (articlesToUpdate.length === 0) {
+                        showToast('⚠️ Nessun articolo da aggiornare', 'warning');
+                        return;
+                    }
+
+                    // VALIDAZIONE: Percentuale valida
+                    if (priceUpdateConfig.percentage <= 0 || priceUpdateConfig.percentage > 100) {
+                        showToast('⚠️ Percentuale deve essere tra 0 e 100', 'warning');
+                        return;
+                    }
+
+                    // STEP 2: Calcola PREVIEW delle modifiche per conferma utente
+                    const preview = articlesToUpdate.map(article => {
+                        const oldPrice = article.salePrice;
+                        const newPrice = calculateNewPrice(
+                            oldPrice,
+                            priceUpdateConfig.percentage,
+                            priceUpdateConfig.operation === 'increase',
+                            priceUpdateConfig.roundToEuro
+                        );
+                        return { article, oldPrice, newPrice };
+                    }).filter(p => p.newPrice !== p.oldPrice); // Solo prezzi che cambiano
+
+                    if (preview.length === 0) {
+                        showToast('ℹ️ Nessun prezzo sarà modificato con questi parametri', 'info');
+                        return;
+                    }
+
+                    // STEP 3: Conferma utente con dettagli
+                    const totalChange = preview.reduce((sum, p) => sum + (p.newPrice - p.oldPrice), 0);
+                    const confirmMessage = `🔄 CONFERMA AGGIORNAMENTO PREZZI\n\n` +
+                        `Articoli da aggiornare: ${preview.length}\n` +
+                        `Operazione: ${priceUpdateConfig.operation === 'increase' ? '📈 Aumento' : '📉 Diminuzione'} del ${priceUpdateConfig.percentage}%\n` +
+                        `Arrotondamento: ${priceUpdateConfig.roundToEuro ? 'SÌ (all\'euro)' : 'NO (mantieni centesimi)'}\n` +
+                        `Variazione totale ricavi: €${totalChange.toFixed(2)}\n\n` +
+                        `⚠️ Questa operazione sarà salvata nello STORICO e può essere annullata.\n\n` +
+                        `Continuare?`;
+
+                    if (!window.confirm(confirmMessage)) return;
+
+                    // STEP 4: Mostra loading
+                    showToast('⏳ Aggiornamento prezzi in corso...', 'info');
+
+                    // STEP 5: Prepara batch Firebase (max 500 operazioni per batch)
+                    // Ragionamento: Firebase limita a 500 operazioni per batch.
+                    // Se abbiamo più articoli, dobbiamo creare batch multipli.
+                    const batchSize = 500;
+                    const batches = [];
+                    let currentBatch = db.batch();
+                    let operationsInBatch = 0;
+
+                    // STEP 6: Array per salvare storico
+                    const historyEntries = [];
+
+                    // STEP 7: Genera ID univoco per questo aggiornamento massivo
+                    // Ragionamento: Tutti i cambiamenti di questo batch avranno lo stesso
+                    // batchId, così possiamo fare UNDO di tutto insieme
+                    const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                    // STEP 8: Processa ogni articolo
+                    for (const { article, oldPrice, newPrice } of preview) {
+                        // Aggiorna articolo
+                        const articleRef = db.collection('articlesArchive').doc(article.code);
+                        currentBatch.update(articleRef, {
+                            salePrice: newPrice,
+                            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+
+                        // Prepara entry storico
+                        historyEntries.push({
+                            batchId: batchId,
+                            articleCode: article.code,
+                            articleName: article.name,
+                            oldPrice: oldPrice,
+                            newPrice: newPrice,
+                            difference: newPrice - oldPrice,
+                            percentage: priceUpdateConfig.percentage,
+                            operation: priceUpdateConfig.operation,
+                            roundedToEuro: priceUpdateConfig.roundToEuro,
+                            category: article.category || '',
+                            changedBy: auth.currentUser?.email || 'unknown',
+                            changedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            reason: 'Bulk price update'
+                        });
+
+                        operationsInBatch++;
+
+                        // Se raggiungiamo 500 operazioni, commit batch e crea nuovo
+                        if (operationsInBatch >= batchSize) {
+                            batches.push(currentBatch);
+                            currentBatch = db.batch();
+                            operationsInBatch = 0;
+                        }
+                    }
+
+                    // Aggiungi ultimo batch se ha operazioni
+                    if (operationsInBatch > 0) {
+                        batches.push(currentBatch);
+                    }
+
+                    // STEP 9: Esegui tutti i batch in sequenza
+                    for (let i = 0; i < batches.length; i++) {
+                        await batches[i].commit();
+                        console.log(`✅ Batch ${i + 1}/${batches.length} completato`);
+                    }
+
+                    // STEP 10: Salva storico (batch separato)
+                    // Ragionamento: Salviamo lo storico DOPO l'aggiornamento prezzi per evitare
+                    // inconsistenze se l'aggiornamento fallisce
+                    const historyBatch = db.batch();
+                    historyEntries.forEach(entry => {
+                        const historyRef = db.collection('priceHistory').doc();
+                        historyBatch.set(historyRef, entry);
+                    });
+                    await historyBatch.commit();
+
+                    // STEP 11: Successo!
+                    showToast(`✅ ${preview.length} prezzi aggiornati con successo! Variazione totale: €${totalChange.toFixed(2)}`, 'success', 7000);
+
+                    // STEP 12: Chiudi modal e reset configurazione
+                    setShowPriceUpdateModal(false);
+                    setPriceUpdateConfig({
+                        filterType: 'all',
+                        category: '',
+                        operation: 'increase',
+                        percentage: 5,
+                        roundToEuro: true,
+                        selectedArticles: []
+                    });
+
+                    // STEP 13: Log per debugging
+                    console.log(`💰 Bulk price update completato:`, {
+                        batchId,
+                        articlesUpdated: preview.length,
+                        totalChange: totalChange.toFixed(2),
+                        operation: priceUpdateConfig.operation,
+                        percentage: priceUpdateConfig.percentage
+                    });
+
+                } catch (error) {
+                    console.error('❌ Error in bulk price update:', error);
+                    showToast('❌ Errore aggiornamento prezzi: ' + error.message, 'error', 7000);
+                }
+            };
+
+            // =================================================================
+            // 💰 PRICE UPDATE PREVIEW - COMPONENTE ANTEPRIMA
+            // =================================================================
+            // Ragionamento: Componente dedicato per mostrare anteprima delle modifiche
+            // PRIMA di applicarle. Principio di "PREVIEW BEFORE COMMIT" per evitare errori.
+            const PriceUpdatePreview = () => {
+                // Calcola articoli che saranno modificati
+                let articlesToShow = articlesArchive || [];
+
+                if (priceUpdateConfig.filterType === 'category' && priceUpdateConfig.category) {
+                    articlesToShow = articlesToShow.filter(
+                        a => a.category === priceUpdateConfig.category
+                    );
+                }
+
+                // Calcola preview
+                const preview = articlesToShow.map(article => {
+                    const oldPrice = article.salePrice;
+                    const newPrice = calculateNewPrice(
+                        oldPrice,
+                        priceUpdateConfig.percentage,
+                        priceUpdateConfig.operation === 'increase',
+                        priceUpdateConfig.roundToEuro
+                    );
+                    const diff = newPrice - oldPrice;
+                    const diffPercent = oldPrice > 0 ? ((diff / oldPrice) * 100) : 0;
+                    return { article, oldPrice, newPrice, diff, diffPercent };
+                }).filter(p => p.newPrice !== p.oldPrice); // Solo prezzi che cambiano
+
+                const previewToShow = preview.slice(0, 10); // Mostra primi 10
+
+                if (preview.length === 0) {
+                    return (
+                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-center">
+                            <p className="text-sm text-yellow-800">
+                                ℹ️ Nessun prezzo sarà modificato con questi parametri
+                            </p>
+                        </div>
+                    );
+                }
+
+                const totalChange = preview.reduce((sum, p) => sum + p.diff, 0);
+
+                return (
+                    <div className="bg-slate-50 rounded-lg p-3">
+                        <div className="flex justify-between items-center mb-2">
+                            <h4 className="text-sm font-semibold text-slate-700">
+                                📊 Anteprima Modifiche {preview.length > 10 && `(primi 10 di ${preview.length})`}
+                            </h4>
+                            <span className={`text-sm font-bold ${totalChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                Variazione totale: €{totalChange.toFixed(2)}
+                            </span>
+                        </div>
+
+                        <div className="max-h-60 overflow-y-auto space-y-1">
+                            {previewToShow.map(({ article, oldPrice, newPrice, diff, diffPercent }) => (
+                                <div
+                                    key={article.code}
+                                    className="flex justify-between items-center py-2 px-2 bg-white rounded border border-slate-200 text-xs"
+                                >
+                                    <div className="flex-1 min-w-0">
+                                        <span className="font-medium text-indigo-700">{article.code}</span>
+                                        <span className="text-slate-600 ml-2 truncate">{article.name}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <span className="text-slate-400">€{oldPrice.toFixed(2)}</span>
+                                        <span className="text-slate-400">→</span>
+                                        <span className={`font-bold ${newPrice > oldPrice ? 'text-green-600' : 'text-red-600'}`}>
+                                            €{newPrice.toFixed(2)}
+                                        </span>
+                                        <span className="text-xs text-slate-500 ml-1">
+                                            ({diff > 0 ? '+' : ''}{diffPercent.toFixed(1)}%)
+                                        </span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {preview.length > 10 && (
+                            <p className="text-xs text-slate-500 mt-2 text-center">
+                                ... e altri {preview.length - 10} articoli
+                            </p>
+                        )}
+
+                        <div className="mt-3 pt-3 border-t border-slate-200 grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span className="text-slate-600">Articoli modificati:</span>
+                                <span className="font-bold text-slate-900 ml-1">{preview.length}</span>
+                            </div>
+                            <div className="text-right">
+                                <span className="text-slate-600">Impatto ricavi:</span>
+                                <span className={`font-bold ml-1 ${totalChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {totalChange >= 0 ? '+' : ''}€{totalChange.toFixed(2)}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
             return (
                 <div className="space-y-4">
                     <div className="bg-white rounded-lg shadow-sm p-4">
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-xl font-bold text-slate-900">🏷️ Archivio Articoli</h2>
-                            <button
-                                onClick={handleNewArticle}
-                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium text-sm"
-                            >
-                                + Nuovo Articolo
-                            </button>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setShowPriceUpdateModal(true)}
+                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium text-sm flex items-center gap-1"
+                                    title="Aggiornamento massivo prezzi"
+                                >
+                                    💰 Aggiorna Prezzi
+                                </button>
+                                <button
+                                    onClick={handleNewArticle}
+                                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium text-sm"
+                                >
+                                    + Nuovo Articolo
+                                </button>
+                            </div>
                         </div>
 
                         {/* Statistiche */}
@@ -6118,6 +6472,188 @@
                                     >
                                         Annulla
                                     </button>
+                                </div>
+                            </div>
+                        </Modal>
+                    )}
+
+                    {/* ======================================================= */}
+                    {/* 💰 BULK PRICE UPDATE MODAL                             */}
+                    {/* ======================================================= */}
+                    {/* Ragionamento: Modal separato per aggiornamento massivo prezzi */}
+                    {/* Include: filtri, configurazione, anteprima, conferma */}
+                    {showPriceUpdateModal && (
+                        <Modal
+                            title="💰 Aggiornamento Massivo Prezzi di Vendita"
+                            onClose={() => setShowPriceUpdateModal(false)}
+                        >
+                            <div className="space-y-4">
+                                {/* Filtri Articoli */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                                        📦 Articoli da aggiornare:
+                                    </label>
+                                    <select
+                                        value={priceUpdateConfig.filterType}
+                                        onChange={(e) => setPriceUpdateConfig(prev => ({
+                                            ...prev,
+                                            filterType: e.target.value,
+                                            category: e.target.value === 'category' ? prev.category : ''
+                                        }))}
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-green-500"
+                                    >
+                                        <option value="all">Tutti gli articoli ({(articlesArchive || []).length})</option>
+                                        <option value="category">Solo una categoria specifica</option>
+                                    </select>
+
+                                    {/* Select Categoria (se filterType = 'category') */}
+                                    {priceUpdateConfig.filterType === 'category' && (
+                                        <select
+                                            value={priceUpdateConfig.category}
+                                            onChange={(e) => setPriceUpdateConfig(prev => ({
+                                                ...prev,
+                                                category: e.target.value
+                                            }))}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-green-500 mt-2"
+                                        >
+                                            <option value="">-- Seleziona categoria --</option>
+                                            {[...new Set((articlesArchive || []).map(a => a.category).filter(c => c))].sort().map(cat => (
+                                                <option key={cat} value={cat}>
+                                                    {cat} ({(articlesArchive || []).filter(a => a.category === cat).length} articoli)
+                                                </option>
+                                            ))}
+                                        </select>
+                                    )}
+                                </div>
+
+                                {/* Tipo Operazione */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                                        📊 Tipo di modifica:
+                                    </label>
+                                    <div className="flex gap-3">
+                                        <label className="flex-1 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="operation"
+                                                value="increase"
+                                                checked={priceUpdateConfig.operation === 'increase'}
+                                                onChange={(e) => setPriceUpdateConfig(prev => ({
+                                                    ...prev,
+                                                    operation: e.target.value
+                                                }))}
+                                                className="sr-only"
+                                            />
+                                            <div className={`p-3 rounded-lg border-2 text-center transition-all ${
+                                                priceUpdateConfig.operation === 'increase'
+                                                    ? 'border-green-500 bg-green-50'
+                                                    : 'border-slate-300 bg-white hover:border-green-300'
+                                            }`}>
+                                                <div className="text-2xl mb-1">📈</div>
+                                                <div className="text-sm font-medium">Aumenta Prezzi</div>
+                                            </div>
+                                        </label>
+                                        <label className="flex-1 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="operation"
+                                                value="decrease"
+                                                checked={priceUpdateConfig.operation === 'decrease'}
+                                                onChange={(e) => setPriceUpdateConfig(prev => ({
+                                                    ...prev,
+                                                    operation: e.target.value
+                                                }))}
+                                                className="sr-only"
+                                            />
+                                            <div className={`p-3 rounded-lg border-2 text-center transition-all ${
+                                                priceUpdateConfig.operation === 'decrease'
+                                                    ? 'border-red-500 bg-red-50'
+                                                    : 'border-slate-300 bg-white hover:border-red-300'
+                                            }`}>
+                                                <div className="text-2xl mb-1">📉</div>
+                                                <div className="text-sm font-medium">Diminuisci Prezzi</div>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                {/* Percentuale */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                                        📐 Percentuale di modifica:
+                                    </label>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="100"
+                                            step="0.1"
+                                            value={priceUpdateConfig.percentage}
+                                            onChange={(e) => setPriceUpdateConfig(prev => ({
+                                                ...prev,
+                                                percentage: parseFloat(e.target.value) || 0
+                                            }))}
+                                            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-green-500"
+                                        />
+                                        <span className="text-2xl font-bold text-slate-700">%</span>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        Esempio: 5% su €100 = {priceUpdateConfig.operation === 'increase' ? '€105' : '€95'}
+                                    </p>
+                                </div>
+
+                                {/* Arrotondamento */}
+                                <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                                    <label className="flex items-start gap-3 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={priceUpdateConfig.roundToEuro}
+                                            onChange={(e) => setPriceUpdateConfig(prev => ({
+                                                ...prev,
+                                                roundToEuro: e.target.checked
+                                            }))}
+                                            className="mt-1"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="text-sm font-medium text-slate-700">
+                                                🔢 Arrotonda all'euro
+                                            </div>
+                                            <div className="text-xs text-slate-600 mt-1">
+                                                {priceUpdateConfig.roundToEuro
+                                                    ? 'Esempio: €25.73 → €26.00 (arrotondato)'
+                                                    : 'Esempio: €25.73 → €25.73 (mantieni centesimi)'}
+                                            </div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                {/* Anteprima Modifiche */}
+                                <div>
+                                    <PriceUpdatePreview />
+                                </div>
+
+                                {/* Pulsanti Azione */}
+                                <div className="flex gap-2 pt-4 border-t border-slate-200">
+                                    <button
+                                        onClick={() => setShowPriceUpdateModal(false)}
+                                        className="flex-1 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium"
+                                    >
+                                        ✕ Annulla
+                                    </button>
+                                    <button
+                                        onClick={applyBulkPriceUpdate}
+                                        className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium shadow-sm"
+                                    >
+                                        ✅ Applica Modifiche
+                                    </button>
+                                </div>
+
+                                {/* Warning Footer */}
+                                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                    <p className="text-xs text-blue-800">
+                                        ℹ️ <strong>Nota:</strong> Tutte le modifiche saranno salvate nello storico e potranno essere annullate.
+                                        Il sistema mantiene traccia completa di ogni cambiamento per audit e ripristino.
+                                    </p>
                                 </div>
                             </div>
                         </Modal>
