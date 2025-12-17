@@ -4300,15 +4300,56 @@
             const lowStockItems = giacenzeArray.filter(g => g.giacenza > 0 && g.giacenza <= 10).length;
             const outOfStockItems = giacenzeArray.filter(g => g.giacenza <= 0).length;
 
-            // Ordini recenti
-            const recentOrders = (orders || [])
-                .sort((a, b) => new Date(b.date) - new Date(a.date))
-                .slice(0, 5);
+            // TOP 5 CLIENTI PER FATTURATO
+            const topCustomersByRevenue = React.useMemo(() => {
+                const customerRevenue = {};
+                (orders || []).forEach(order => {
+                    const revenue = order.quantity * order.salePrice;
+                    const customerCode = order.customer;
+                    const customerName = order.customerName || customerCode;
 
-            // Spese recenti
-            const recentExpenses = (expenses || [])
-                .sort((a, b) => new Date(b.date) - new Date(a.date))
-                .slice(0, 5);
+                    if (!customerRevenue[customerCode]) {
+                        customerRevenue[customerCode] = {
+                            code: customerCode,
+                            name: customerName,
+                            totalRevenue: 0,
+                            orderCount: 0
+                        };
+                    }
+                    customerRevenue[customerCode].totalRevenue += revenue;
+                    customerRevenue[customerCode].orderCount += 1;
+                });
+
+                return Object.values(customerRevenue)
+                    .sort((a, b) => b.totalRevenue - a.totalRevenue)
+                    .slice(0, 5);
+            }, [orders]);
+
+            // TOP 5 ARTICOLI VENDUTI
+            const topArticlesBySales = React.useMemo(() => {
+                const articleSales = {};
+                (orders || []).forEach(order => {
+                    const articleCode = order.article;
+                    const articleName = order.articleName || articleCode;
+
+                    if (!articleSales[articleCode]) {
+                        articleSales[articleCode] = {
+                            code: articleCode,
+                            name: articleName,
+                            totalQuantity: 0,
+                            totalRevenue: 0,
+                            orderCount: 0
+                        };
+                    }
+                    articleSales[articleCode].totalQuantity += order.quantity;
+                    articleSales[articleCode].totalRevenue += (order.quantity * order.salePrice);
+                    articleSales[articleCode].orderCount += 1;
+                });
+
+                return Object.values(articleSales)
+                    .sort((a, b) => b.totalQuantity - a.totalQuantity)
+                    .slice(0, 5);
+            }, [orders]);
 
             return (
                 <div className="space-y-4">
@@ -4344,66 +4385,55 @@
                         </div>
                     </div>
 
-                    {/* Ordini Status */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-white rounded-lg shadow-sm p-4">
-                            <h3 className="text-lg font-semibold text-slate-800 mb-3">📋 Stato Ordini</h3>
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between p-2 bg-green-50 rounded">
-                                    <span className="text-sm text-slate-700">✅ Completati</span>
-                                    <span className="font-bold text-green-700">{completedOrders}</span>
-                                </div>
-                                <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
-                                    <span className="text-sm text-slate-700">⏳ In Corso</span>
-                                    <span className="font-bold text-yellow-700">{inProgressOrders}</span>
-                                </div>
-                                <div className="flex items-center justify-between p-2 bg-red-50 rounded">
-                                    <span className="text-sm text-slate-700">🔴 Da Iniziare</span>
-                                    <span className="font-bold text-red-700">{notStartedOrders}</span>
-                                </div>
+                    {/* Sezione Stati e Scorte - Layout Compatto */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                        {/* Stato Ordini - Cards Compatte */}
+                        <div className="bg-white rounded-lg shadow-sm p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-slate-600">✅ Completati</span>
+                                <span className="text-lg font-bold text-green-600">{completedOrders}</span>
                             </div>
                         </div>
-
-                        <div className="bg-white rounded-lg shadow-sm p-4">
-                            <h3 className="text-lg font-semibold text-slate-800 mb-3">📦 Scorte</h3>
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between p-2 bg-slate-50 rounded">
-                                    <span className="text-sm text-slate-700">Totale Articoli</span>
-                                    <span className="font-bold text-slate-700">{giacenzeArray.length}</span>
-                                </div>
-                                <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
-                                    <span className="text-sm text-slate-700">⚠️ Scorte Basse</span>
-                                    <span className="font-bold text-yellow-700">{lowStockItems}</span>
-                                </div>
-                                <div className="flex items-center justify-between p-2 bg-red-50 rounded">
-                                    <span className="text-sm text-slate-700">❌ Esaurite</span>
-                                    <span className="font-bold text-red-700">{outOfStockItems}</span>
-                                </div>
+                        <div className="bg-white rounded-lg shadow-sm p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-slate-600">⏳ In Corso</span>
+                                <span className="text-lg font-bold text-yellow-600">{inProgressOrders}</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-lg shadow-sm p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-slate-600">🔴 Da Iniziare</span>
+                                <span className="text-lg font-bold text-red-600">{notStartedOrders}</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-lg shadow-sm p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-slate-600">⚠️ Scorte Basse</span>
+                                <span className="text-lg font-bold text-orange-600">{lowStockItems}</span>
                             </div>
                         </div>
                     </div>
 
-                    {/* Attività Recenti */}
+                    {/* TOP 5 Clienti e Articoli */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* TOP 5 CLIENTI PER FATTURATO */}
                         <div className="bg-white rounded-lg shadow-sm p-4">
-                            <h3 className="text-lg font-semibold text-slate-800 mb-3">🕒 Ordini Recenti</h3>
-                            {recentOrders.length === 0 ? (
-                                <p className="text-center text-slate-500 py-4">Nessun ordine</p>
+                            <h3 className="text-lg font-semibold text-slate-800 mb-3">🏆 TOP 5 CLIENTI PER FATTURATO</h3>
+                            {topCustomersByRevenue.length === 0 ? (
+                                <p className="text-center text-slate-500 py-4">Nessun cliente</p>
                             ) : (
                                 <div className="space-y-2">
-                                    {recentOrders.map(order => (
-                                        <div key={order.id} className="flex items-center justify-between p-2 bg-slate-50 rounded text-sm">
-                                            <div className="flex-1">
-                                                <p className="font-medium text-slate-800">
-                                                    {order.customerName || order.customer}
-                                                </p>
-                                                <p className="text-xs text-slate-500">
-                                                    {order.articleName || order.article}
-                                                </p>
+                                    {topCustomersByRevenue.map((customer, index) => (
+                                        <div key={customer.code} className="flex items-center gap-3 p-2 bg-gradient-to-r from-blue-50 to-transparent rounded hover:from-blue-100 transition-colors">
+                                            <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                                                {index + 1}
                                             </div>
-                                            <div className="text-right">
-                                                <p className="font-bold text-blue-600">{formatCurrency(order.quantity * order.salePrice)}</p>
-                                                <p className="text-xs text-slate-500">{formatDate(order.date)}</p>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="font-semibold text-slate-800 truncate">{customer.name}</p>
+                                                <p className="text-xs text-slate-500">{customer.orderCount} ordini</p>
+                                            </div>
+                                            <div className="text-right flex-shrink-0">
+                                                <p className="font-bold text-blue-600">{formatCurrency(customer.totalRevenue)}</p>
                                             </div>
                                         </div>
                                     ))}
@@ -4411,20 +4441,25 @@
                             )}
                         </div>
 
+                        {/* TOP 5 ARTICOLI VENDUTI */}
                         <div className="bg-white rounded-lg shadow-sm p-4">
-                            <h3 className="text-lg font-semibold text-slate-800 mb-3">💰 Spese Recenti</h3>
-                            {recentExpenses.length === 0 ? (
-                                <p className="text-center text-slate-500 py-4">Nessuna spesa</p>
+                            <h3 className="text-lg font-semibold text-slate-800 mb-3">🎯 TOP 5 ARTICOLI VENDUTI</h3>
+                            {topArticlesBySales.length === 0 ? (
+                                <p className="text-center text-slate-500 py-4">Nessun articolo</p>
                             ) : (
                                 <div className="space-y-2">
-                                    {recentExpenses.map(expense => (
-                                        <div key={expense.id} className="flex items-center justify-between p-2 bg-slate-50 rounded text-sm">
-                                            <div className="flex-1">
-                                                <p className="font-medium text-slate-800">{expense.description}</p>
-                                                <p className="text-xs text-slate-500">{formatDate(expense.date)}</p>
+                                    {topArticlesBySales.map((article, index) => (
+                                        <div key={article.code} className="flex items-center gap-3 p-2 bg-gradient-to-r from-emerald-50 to-transparent rounded hover:from-emerald-100 transition-colors">
+                                            <div className="flex-shrink-0 w-6 h-6 bg-emerald-600 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                                                {index + 1}
                                             </div>
-                                            <div className="text-right">
-                                                <p className="font-bold text-emerald-600">{formatCurrency(expense.quantity * expense.price)}</p>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="font-semibold text-slate-800 truncate">{article.name}</p>
+                                                <p className="text-xs text-slate-500">{formatCurrency(article.totalRevenue)} fatturato</p>
+                                            </div>
+                                            <div className="text-right flex-shrink-0">
+                                                <p className="font-bold text-emerald-600">{article.totalQuantity} pz</p>
+                                                <p className="text-xs text-slate-500">{article.orderCount} ordini</p>
                                             </div>
                                         </div>
                                     ))}
