@@ -5715,13 +5715,14 @@
             // Ragionamento: Separiamo lo stato del bulk update dal form principale
             // per mantenere SEPARAZIONE DELLE RESPONSABILITÀ (Single Responsibility Principle)
             const [showPriceUpdateModal, setShowPriceUpdateModal] = useState(false);
+            const [selectedArticlesForUpdate, setSelectedArticlesForUpdate] = useState([]); // 🆕 SELEZIONE CHECKBOX
             const [priceUpdateConfig, setPriceUpdateConfig] = useState({
                 filterType: 'all',        // 'all' | 'category' | 'selected'
                 category: '',              // categoria selezionata se filterType='category'
                 operation: 'increase',     // 'increase' | 'decrease'
                 percentage: 5,             // default 5%
                 roundToEuro: true,         // default arrotonda all'euro
-                selectedArticles: []       // array di codici articoli (per future implementazioni)
+                selectedArticles: []       // array di codici articoli (sincronizzato con selectedArticlesForUpdate)
             });
 
             // Genera codice automatico
@@ -5788,6 +5789,42 @@
 
                 // Assicura sempre 2 decimali per consistenza
                 return parseFloat(newPrice.toFixed(2));
+            };
+
+            // =================================================================
+            // 💰 FUNZIONI HELPER SELEZIONE ARTICOLI
+            // =================================================================
+            // Toggle singolo articolo
+            const toggleArticleSelection = (articleCode) => {
+                setSelectedArticlesForUpdate(prev => {
+                    if (prev.includes(articleCode)) {
+                        return prev.filter(code => code !== articleCode);
+                    } else {
+                        return [...prev, articleCode];
+                    }
+                });
+            };
+
+            // Select All / Deselect All
+            const toggleSelectAll = () => {
+                if (selectedArticlesForUpdate.length === filteredArticles.length) {
+                    // Deselect all
+                    setSelectedArticlesForUpdate([]);
+                } else {
+                    // Select all filtered articles
+                    setSelectedArticlesForUpdate(filteredArticles.map(a => a.code));
+                }
+            };
+
+            // Check se articolo è selezionato
+            const isArticleSelected = (articleCode) => {
+                return selectedArticlesForUpdate.includes(articleCode);
+            };
+
+            // Check se tutti sono selezionati
+            const areAllSelected = () => {
+                return filteredArticles.length > 0 &&
+                       selectedArticlesForUpdate.length === filteredArticles.length;
             };
 
             // Margine corrente nel form
@@ -5965,8 +6002,13 @@
                             a => a.category === priceUpdateConfig.category
                         );
                     } else if (priceUpdateConfig.filterType === 'selected') {
+                        // 🆕 USA selectedArticlesForUpdate invece di priceUpdateConfig.selectedArticles
+                        if (selectedArticlesForUpdate.length === 0) {
+                            showToast('⚠️ Nessun articolo selezionato! Seleziona gli articoli dalla tabella.', 'warning');
+                            return;
+                        }
                         articlesToUpdate = articlesToUpdate.filter(
-                            a => priceUpdateConfig.selectedArticles.includes(a.code)
+                            a => selectedArticlesForUpdate.includes(a.code)
                         );
                     }
 
@@ -6092,6 +6134,7 @@
 
                     // STEP 12: Chiudi modal e reset configurazione
                     setShowPriceUpdateModal(false);
+                    setSelectedArticlesForUpdate([]); // 🆕 RESET SELEZIONE
                     setPriceUpdateConfig({
                         filterType: 'all',
                         category: '',
@@ -6128,6 +6171,11 @@
                 if (priceUpdateConfig.filterType === 'category' && priceUpdateConfig.category) {
                     articlesToShow = articlesToShow.filter(
                         a => a.category === priceUpdateConfig.category
+                    );
+                } else if (priceUpdateConfig.filterType === 'selected') {
+                    // 🆕 FILTRA PER SELEZIONE
+                    articlesToShow = articlesToShow.filter(
+                        a => selectedArticlesForUpdate.includes(a.code)
                     );
                 }
 
@@ -6291,6 +6339,15 @@
                                     <table className="w-full text-sm">
                                         <thead className="bg-slate-50 border-b border-slate-200">
                                             <tr>
+                                                <th className="px-3 py-2 text-center font-semibold text-slate-700 w-12">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={areAllSelected()}
+                                                        onChange={toggleSelectAll}
+                                                        className="cursor-pointer w-4 h-4"
+                                                        title={areAllSelected() ? "Deseleziona tutti" : "Seleziona tutti"}
+                                                    />
+                                                </th>
                                                 <th className="px-3 py-2 text-left font-semibold text-slate-700">Codice</th>
                                                 <th className="px-3 py-2 text-left font-semibold text-slate-700">Nome</th>
                                                 <th className="px-3 py-2 text-left font-semibold text-slate-700">Categoria</th>
@@ -6303,8 +6360,21 @@
                                         <tbody>
                                             {filteredArticles.map((article) => {
                                                 const margin = calculateMargin(article.costPrice, article.salePrice);
+                                                const isSelected = isArticleSelected(article.code);
                                                 return (
-                                                    <tr key={article.code} className="border-b border-slate-100 hover:bg-slate-50">
+                                                    <tr
+                                                        key={article.code}
+                                                        className={`border-b border-slate-100 hover:bg-slate-50 ${isSelected ? 'bg-green-50' : ''}`}
+                                                    >
+                                                        <td className="px-3 py-2 text-center">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={isSelected}
+                                                                onChange={() => toggleArticleSelection(article.code)}
+                                                                className="cursor-pointer w-4 h-4"
+                                                                title="Seleziona per aggiornamento prezzi"
+                                                            />
+                                                        </td>
                                                         <td className="px-3 py-2 font-medium text-indigo-700">{article.code}</td>
                                                         <td className="px-3 py-2">
                                                             <div className="font-medium text-slate-900">{article.name}</div>
@@ -6498,13 +6568,36 @@
                                         onChange={(e) => setPriceUpdateConfig(prev => ({
                                             ...prev,
                                             filterType: e.target.value,
-                                            category: e.target.value === 'category' ? prev.category : ''
+                                            category: e.target.value === 'category' ? prev.category : '',
+                                            selectedArticles: e.target.value === 'selected' ? selectedArticlesForUpdate : []
                                         }))}
                                         className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-green-500"
                                     >
                                         <option value="all">Tutti gli articoli ({(articlesArchive || []).length})</option>
                                         <option value="category">Solo una categoria specifica</option>
+                                        <option value="selected">
+                                            Solo articoli selezionati ({selectedArticlesForUpdate.length} selezionati)
+                                        </option>
                                     </select>
+
+                                    {/* Warning se nessun articolo selezionato */}
+                                    {priceUpdateConfig.filterType === 'selected' && selectedArticlesForUpdate.length === 0 && (
+                                        <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                                            <p className="text-sm text-yellow-800">
+                                                ⚠️ <strong>Nessun articolo selezionato!</strong><br/>
+                                                Seleziona gli articoli dalla tabella principale usando le checkbox.
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {/* Info articoli selezionati */}
+                                    {priceUpdateConfig.filterType === 'selected' && selectedArticlesForUpdate.length > 0 && (
+                                        <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                            <p className="text-sm text-green-800">
+                                                ✅ {selectedArticlesForUpdate.length} articolo/i selezionato/i
+                                            </p>
+                                        </div>
+                                    )}
 
                                     {/* Select Categoria (se filterType = 'category') */}
                                     {priceUpdateConfig.filterType === 'category' && (
